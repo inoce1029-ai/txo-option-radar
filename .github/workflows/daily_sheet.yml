@@ -1,0 +1,37 @@
+name: TXO Option Radar Google Sheet Daily
+
+on:
+  schedule:
+    # 17:40 Taiwan time = 09:40 UTC
+    - cron: "40 9 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run-radar-sheet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run TXO radar and write Google Sheet
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          python txo_option_radar_sheet_v12.py | tee txo_option_radar_report.txt
+
+      - name: Upload backup report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: txo-option-radar-report
+          path: |
+            txo_option_radar_report.txt
+            txo_option_radar_summary_v12.csv
