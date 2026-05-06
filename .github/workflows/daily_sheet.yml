@@ -26,7 +26,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: |
-          python txo_option_radar_sheet_v12.py | tee txo_option_radar_report.txt
+          python txo_option_radar_sheet_v13.py | tee txo_option_radar_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -34,4 +34,4 @@ jobs:
           name: txo-option-radar-report
           path: |
             txo_option_radar_report.txt
-            txo_option_radar_summary_v12.csv
+            txo_option_radar_summary_v13.csv
