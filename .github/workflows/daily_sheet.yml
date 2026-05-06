@@ -20,12 +20,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run TXO radar and write Google Sheet
+      - name: Run TXO radar, write Google Sheet, and send Telegram
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python txo_option_radar_sheet_v16.py | tee txo_option_radar_report.txt
+          python txo_option_radar_sheet_v17.py | tee txo_option_radar_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -33,4 +35,4 @@ jobs:
           name: txo-option-radar-report
           path: |
             txo_option_radar_report.txt
-            txo_option_radar_summary_v16.csv
+            txo_option_radar_summary_v17.csv
