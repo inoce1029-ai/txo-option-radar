@@ -1,0 +1,39 @@
+name: US Market Afterhours Radar Daily
+
+on:
+  schedule:
+    # 07:00 Taiwan time Tue-Sat = 23:00 UTC Mon-Fri
+    - cron: "0 23 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  run-us-market-radar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run US market afterhours radar and send Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python us_market_afterhours_radar_v04.py | tee us_market_afterhours_report.txt
+
+      - name: Upload backup report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: us-market-afterhours-radar-report
+          path: |
+            us_market_afterhours_report.txt
+            us_strong_top10_v04.csv
+            us_weak_top10_v04.csv
+            us_inflow_sector_top10_v04.csv
