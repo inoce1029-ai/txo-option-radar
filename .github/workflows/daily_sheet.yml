@@ -28,7 +28,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python txo_option_radar_sheet_v19.py | tee txo_option_radar_report.txt
+          python txo_option_radar_sheet_v20.py | tee txo_option_radar_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -36,4 +36,4 @@ jobs:
           name: txo-option-radar-report
           path: |
             txo_option_radar_report.txt
-            txo_option_radar_summary_v19.csv
+            txo_option_radar_summary_v20.csv
