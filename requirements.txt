@@ -1,3 +1,5 @@
 pandas
 requests
+gspread
+google-auth
 yfinance
