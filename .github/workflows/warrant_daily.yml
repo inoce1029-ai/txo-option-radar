@@ -26,13 +26,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_warrant_flow_radar_v06.py | tee market_warrant_flow_report.txt
+          python market_warrant_flow_radar_v07.py | tee market_warrant_flow_report.txt
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
         with:
           name: market-warrant-flow-radar-report
           path: |
             market_warrant_flow_report.txt
-            market_warrant_flow_raw_v06.csv
-            market_volume_top10_v06.csv
-            market_amount_top10_v06.csv
+            market_warrant_flow_raw_v07.csv
+            market_volume_top10_v07.csv
+            market_amount_top10_v07.csv
