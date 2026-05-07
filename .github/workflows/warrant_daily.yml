@@ -29,7 +29,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_flow_radar_v12.py | tee market_flow_report.txt
+          python market_flow_radar_v13.py | tee market_flow_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -37,8 +37,8 @@ jobs:
           name: market-flow-radar-report
           path: |
             market_flow_report.txt
-            market_flow_raw_v12.csv
-            market_volume_top10_v12.csv
-            market_amount_top10_v12.csv
-            foreign_buy_top10_v12.csv
-            foreign_sell_top10_v12.csv
+            market_flow_raw_v13.csv
+            market_volume_top10_v13.csv
+            market_amount_top10_v13.csv
+            foreign_buy_top15_v13.csv
+            foreign_sell_top15_v13.csv
