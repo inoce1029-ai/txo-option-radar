@@ -12,12 +12,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
       - name: Run market + warrant flow radar
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -26,13 +29,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_warrant_flow_radar_v07.py | tee market_warrant_flow_report.txt
+          python market_warrant_flow_radar_v08.py | tee market_warrant_flow_report.txt
+
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
         with:
           name: market-warrant-flow-radar-report
           path: |
             market_warrant_flow_report.txt
-            market_warrant_flow_raw_v07.csv
-            market_volume_top10_v07.csv
-            market_amount_top10_v07.csv
+            market_warrant_flow_raw_v08.csv
+            market_volume_top10_v08.csv
+            market_amount_top10_v08.csv
