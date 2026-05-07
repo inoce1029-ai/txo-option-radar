@@ -2,8 +2,8 @@ name: Market Warrant Flow Radar Daily
 
 on:
   schedule:
-    # 20:00 Taiwan time = 12:00 UTC
-    - cron: "0 12 * * 1-5"
+    # 18:00 Taiwan time = 10:00 UTC
+    - cron: "0 10 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_flow_radar_v10.py | tee market_flow_report.txt
+          python market_flow_radar_v11.py | tee market_flow_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -37,6 +37,6 @@ jobs:
           name: market-flow-radar-report
           path: |
             market_flow_report.txt
-            market_flow_raw_v10.csv
-            market_volume_top10_v10.csv
-            market_amount_top10_v10.csv
+            market_flow_raw_v11.csv
+            market_volume_top10_v11.csv
+            market_amount_top10_v11.csv
