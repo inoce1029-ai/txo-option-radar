@@ -26,7 +26,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python us_market_afterhours_radar_v04.py | tee us_market_afterhours_report.txt
+          python us_market_afterhours_radar_v05.py | tee us_market_afterhours_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -34,6 +34,6 @@ jobs:
           name: us-market-afterhours-radar-report
           path: |
             us_market_afterhours_report.txt
-            us_strong_top10_v04.csv
-            us_weak_top10_v04.csv
-            us_inflow_sector_top10_v04.csv
+            us_strong_top10_v05.csv
+            us_weak_top10_v05.csv
+            us_inflow_sector_top10_v05.csv
