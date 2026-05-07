@@ -2,8 +2,8 @@ name: Market Warrant Flow Radar Daily
 
 on:
   schedule:
-    # 17:55 Taiwan time = 09:55 UTC
-    - cron: "55 9 * * 1-5"
+    # 20:00 Taiwan time = 12:00 UTC
+    - cron: "0 12 * * 1-5"
   workflow_dispatch:
 
 jobs:
