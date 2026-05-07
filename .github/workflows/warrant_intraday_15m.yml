@@ -1,13 +1,13 @@
-name: Market Warrant Flow Radar Daily
+name: Market Warrant Intraday Radar 15m
 
 on:
   schedule:
-    # 17:55 Taiwan time = 09:55 UTC
-    - cron: "55 9 * * 1-5"
+    # Taiwan 09:00-14:00 = UTC 01:00-06:00, every 15 minutes
+    - cron: "*/15 1-6 * * 1-5"
   workflow_dispatch:
 
 jobs:
-  run-market-warrant-radar:
+  run-market-warrant-intraday:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run market + warrant flow radar
+      - name: Run market + warrant intraday radar
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
@@ -26,13 +26,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_warrant_flow_radar_v06.py | tee market_warrant_flow_report.txt
+          python market_warrant_flow_radar_v06.py | tee market_warrant_intraday_report.txt
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
         with:
-          name: market-warrant-flow-radar-report
+          name: market-warrant-intraday-radar-report
           path: |
-            market_warrant_flow_report.txt
+            market_warrant_intraday_report.txt
             market_warrant_flow_raw_v06.csv
             market_volume_top10_v06.csv
             market_amount_top10_v06.csv
