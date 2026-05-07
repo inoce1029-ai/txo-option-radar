@@ -2,8 +2,8 @@ name: TXO Option Radar Google Sheet Daily
 
 on:
   schedule:
-    # 20:00 Taiwan time = 12:00 UTC
-    - cron: "0 12 * * 1-5"
+    # 18:00 Taiwan time = 10:00 UTC
+    - cron: "0 10 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python txo_option_radar_sheet_v21.py | tee txo_option_radar_report.txt
+          python txo_option_radar_sheet_v22.py | tee txo_option_radar_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
@@ -36,4 +36,4 @@ jobs:
           name: txo-option-radar-report
           path: |
             txo_option_radar_report.txt
-            txo_option_radar_summary_v21.csv
+            txo_option_radar_summary_v22.csv
