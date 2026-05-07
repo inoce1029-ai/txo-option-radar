@@ -1,4 +1,4 @@
-name: Warrant Flow Radar Daily
+name: Market Warrant Flow Radar Daily
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  run-warrant-radar:
+  run-market-warrant-radar:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -21,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run warrant flow radar
+      - name: Run market + warrant flow radar
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
@@ -29,14 +29,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python warrant_flow_radar_v02.py | tee warrant_flow_report.txt
+          python market_warrant_flow_radar_v05.py | tee market_warrant_flow_report.txt
 
       - name: Upload backup report artifact
         uses: actions/upload-artifact@v4
         with:
-          name: warrant-flow-radar-report
+          name: market-warrant-flow-radar-report
           path: |
-            warrant_flow_report.txt
-            warrant_flow_raw_v02.csv
-            warrant_volume_top10_v02.csv
-            warrant_amount_top10_v02.csv
+            market_warrant_flow_report.txt
+            market_warrant_flow_raw_v05.csv
+            market_volume_top10_v05.csv
+            market_amount_top10_v05.csv
