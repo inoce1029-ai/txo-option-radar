@@ -2180,7 +2180,7 @@ def build_report(df):
 
     if df.empty:
         report = "\n".join([
-            "📊 市場資金流雷達 v1.5",
+            "📊 市場資金流雷達 v1.8",
             status_text,
             f"📅 資料日：{actual_day}",
             f"🕒 最後更新：{now.strftime('%Y/%m/%d %H:%M')}",
@@ -2204,7 +2204,7 @@ def build_report(df):
     focus = pd.DataFrame()
 
     report_lines = []
-    report_lines.append("📊 市場資金流雷達 v1.5")
+    report_lines.append("📊 市場資金流雷達 v1.8")
     report_lines.append(status_text)
     if status_text.startswith("⚠️"):
         report_lines.append(f"預期資料日：{expected_day}")
@@ -2233,9 +2233,7 @@ def build_report(df):
     report_lines.append("━━━━━━━━━━━━━━")
     report_lines.append("")
 
-    # 新增：權證認購 / 認售買賣超 TOP10，放在報告最後面
-    warrant_bs_top10 = fetch_warrant_bs_top10()
-    append_warrant_bs_top10_section(report_lines, warrant_bs_top10)
+    # 權證買賣超 TOP10 已移除：永豐金 / 富邦動態資料來源不穩，避免報告長期出現「資料不足」。
 
     foreign_buy_top = (
         foreign_df[foreign_df["外資買賣超股數"] > 0]
@@ -2286,20 +2284,18 @@ def write_sheet(report, df, market_vol_top, market_amt_top, warrant_vol_top, war
     gc, email = get_gsheet_client()
     sh = gc.open_by_key(sheet_id)
 
-    ws_report = get_or_create_ws(sh, "權證今日報告", rows=300, cols=5)
+    ws_report = get_or_create_ws(sh, "市場今日報告", rows=300, cols=5)
     ws_report.clear()
     safe_update(ws_report, "A1", [[line] for line in report.splitlines()])
 
     write_df(get_or_create_ws(sh, "市場成交量Top10", rows=100, cols=20), market_vol_top)
     write_df(get_or_create_ws(sh, "市場成交金額Top10", rows=100, cols=20), market_amt_top)
-    write_df(get_or_create_ws(sh, "權證成交量Top10", rows=100, cols=20), warrant_vol_top)
-    write_df(get_or_create_ws(sh, "權證成交金額Top10", rows=100, cols=20), warrant_amt_top)
-    write_df(get_or_create_ws(sh, "權證標的集中", rows=100, cols=20), focus)
+    # 權證相關工作表已移除。
     write_df(get_or_create_ws(sh, "外資買超Top15", rows=100, cols=20), foreign_buy_top)
     write_df(get_or_create_ws(sh, "外資賣超Top15", rows=100, cols=20), foreign_sell_top)
     write_df(get_or_create_ws(sh, "市場原始資料", rows=5000, cols=20), df)
 
-    ws_hist = get_or_create_ws(sh, "市場權證歷史紀錄", rows=1000, cols=20)
+    ws_hist = get_or_create_ws(sh, "市場歷史紀錄", rows=1000, cols=20)
     if not ws_hist.get_all_values():
         ws_hist.append_row(["寫入時間", "資料日", "成交量集中", "成交金額集中", "今日總結"])
 
@@ -2337,7 +2333,7 @@ def send_telegram(report):
 
     for i, chunk in enumerate(chunks, start=1):
         if len(chunks) > 1:
-            chunk = f"權證資金流雷達 分段 {i}/{len(chunks)}\n\n" + chunk
+            chunk = f"市場資金流雷達 分段 {i}/{len(chunks)}\n\n" + chunk
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
         r = requests.post(url, json=payload, timeout=30)
