@@ -894,18 +894,16 @@ def fetch_warrant_bs_top10():
             return None
 
     def fmt_amount_yi(v):
-        try:
-            num = float(v)
-
-            # 若來源已經是億單位，例如 1.23，直接顯示
-            if abs(num) < 1000:
-                yi = num
-            else:
-                yi = num / 100_000_000
-
-            return f"{yi:.1f}億"
-        except Exception:
-            return ""
+    """
+    HiStock 買賣超金額改用「萬」顯示，小數後 1 位。
+    來源通常是元。
+    """
+    try:
+        num = float(v)
+        wan = num / 10_000
+        return f"{wan:.1f}萬"
+    except Exception:
+        return ""
 
     def clean_name(v):
         s = str(v).replace("\n", "").replace("\r", "").strip()
