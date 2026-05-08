@@ -526,13 +526,15 @@ def format_rank_rows(df: pd.DataFrame, strong=True) -> List[str]:
 
 
 def format_supply_rows(items) -> List[str]:
+    """
+    精簡版：只顯示台股名稱與關聯等級。
+    """
     if not items:
         return ["資料暫時不足"]
     rows = []
     for i, item in enumerate(items[:10], 1):
         if isinstance(item, dict):
-            src = " / ".join(item.get("sources", [])) or "-"
-            rows.append(f"{i}. {item.get('name')}｜{item.get('level')}｜{src}")
+            rows.append(f"{i}. {item.get('name')}｜{item.get('level')}")
         else:
             rows.append(f"{i}. {item}")
     return rows
@@ -899,13 +901,18 @@ def build_tw_group_radar(active_df: pd.DataFrame, watch_rows: List[dict], cross_
 
 
 def format_tw_group_radar(items: List[dict]) -> List[str]:
+    """
+    精簡版輸出：
+    只顯示 族群｜偏向｜代表股，避免 Telegram 太亂。
+    """
     if not items:
         return ["資料暫時不足"]
     rows = []
     for i, item in enumerate(items[:10], 1):
-        rows.append(
-            f"{i}. {item['group']}｜{item['tone']}｜{item['drivers']}｜{item['stocks']}"
-        )
+        stocks = str(item.get("stocks", ""))
+        # 只保留前 3 檔代表股，避免太長
+        stock_short = "、".join([x for x in stocks.split("、") if x][:3])
+        rows.append(f"{i}. {item.get('group')}｜{item.get('tone')}｜{stock_short}")
     return rows
 
 
@@ -981,7 +988,7 @@ def make_report(active_df: pd.DataFrame, strong_top: pd.DataFrame, weak_top: pd.
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
-    lines.append("🇹🇼 台股族群盤前雷達 Top 10")
+    lines.append("🇹🇼 台股族群雷達 Top 10")
     lines.extend(format_tw_group_radar(tw_group_radar))
 
     lines.append("")
