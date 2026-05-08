@@ -644,6 +644,272 @@ def format_cross_rows(rows: List[dict]) -> List[str]:
     return out
 
 
+# ============================================================
+# 台股族群盤前雷達：廣泛版，輸出仍維持 Top 10
+# ============================================================
+
+TAIWAN_GROUP_RADAR = {
+    "半導體權值": {
+        "stocks": ["台積電", "聯發科", "日月光投控", "聯電", "創意", "世芯-KY"],
+        "drivers": ["TSM", "NVDA", "AMD", "AVGO", "ASML", "ARM", "QCOM", "INTC", "^SOX"],
+    },
+    "IC設計": {
+        "stocks": ["聯發科", "創意", "世芯-KY", "智原", "瑞昱", "祥碩"],
+        "drivers": ["NVDA", "AMD", "ARM", "QCOM", "MRVL", "AVGO", "INTC"],
+    },
+    "晶圓代工 / 封測": {
+        "stocks": ["台積電", "聯電", "力積電", "日月光投控", "京元電子", "矽格"],
+        "drivers": ["TSM", "INTC", "ASML", "AMD", "NVDA", "AVGO", "^SOX"],
+    },
+    "半導體設備 / 材料": {
+        "stocks": ["家登", "辛耘", "弘塑", "帆宣", "漢唐", "京鼎", "旺矽"],
+        "drivers": ["ASML", "TSM", "AMAT", "LRCX", "KLAC", "TER", "^SOX"],
+    },
+    "AI伺服器": {
+        "stocks": ["緯穎", "廣達", "緯創", "英業達", "神達", "營邦"],
+        "drivers": ["NVDA", "SMCI", "DELL", "HPE", "MSFT", "GOOGL", "META", "AMZN"],
+    },
+    "伺服器代工": {
+        "stocks": ["廣達", "緯創", "英業達", "仁寶", "神達", "緯穎"],
+        "drivers": ["SMCI", "DELL", "HPE", "MSFT", "AMZN", "GOOGL", "META"],
+    },
+    "散熱": {
+        "stocks": ["奇鋐", "雙鴻", "健策", "建準", "力致", "尼得科超眾"],
+        "drivers": ["NVDA", "SMCI", "DELL", "AMD", "AVGO", "MSFT"],
+    },
+    "電源 / UPS": {
+        "stocks": ["台達電", "光寶科", "群電", "康舒", "崇越電", "飛宏"],
+        "drivers": ["NVDA", "SMCI", "DELL", "HPE", "TSLA", "MSFT", "AMZN"],
+    },
+    "PCB / CCL": {
+        "stocks": ["台光電", "聯茂", "欣興", "金像電", "臻鼎-KY", "健鼎"],
+        "drivers": ["AVGO", "NVDA", "AMD", "MRVL", "ANET", "AAPL", "TSM"],
+    },
+    "ABF / 載板": {
+        "stocks": ["欣興", "景碩", "南電", "臻鼎-KY"],
+        "drivers": ["NVDA", "AMD", "AVGO", "INTC", "TSM", "^SOX"],
+    },
+    "記憶體 / NAND": {
+        "stocks": ["南亞科", "華邦電", "群聯", "威剛", "創見", "十銓"],
+        "drivers": ["MU", "WDC", "STX", "NVDA", "AMD"],
+    },
+    "網通": {
+        "stocks": ["智邦", "啟碁", "中磊", "明泰", "正文", "台光電"],
+        "drivers": ["ANET", "CSCO", "MRVL", "AVGO", "AMZN", "GOOGL", "META"],
+    },
+    "光通訊": {
+        "stocks": ["聯亞", "上詮", "華星光", "波若威", "眾達-KY", "光聖"],
+        "drivers": ["ANET", "MRVL", "AVGO", "CSCO", "NVDA", "META", "GOOGL"],
+    },
+    "蘋概": {
+        "stocks": ["鴻海", "大立光", "玉晶光", "台郡", "臻鼎-KY", "和碩"],
+        "drivers": ["AAPL", "QCOM", "TSM", "AVGO"],
+    },
+    "電動車 / 車用": {
+        "stocks": ["貿聯-KY", "台達電", "和大", "胡連", "致茂", "同致"],
+        "drivers": ["TSLA", "RIVN", "LCID", "NIO", "XPEV", "LI"],
+    },
+    "機器人 / 自動化": {
+        "stocks": ["上銀", "亞德客-KY", "盟立", "所羅門", "羅昇", "穎漢"],
+        "drivers": ["TSLA", "NVDA", "ROK", "ISRG", "TER", "SYM"],
+    },
+    "航太 / 軍工": {
+        "stocks": ["漢翔", "寶一", "千附精密", "雷虎", "長榮航太"],
+        "drivers": ["BA", "LMT", "RTX", "NOC", "GD"],
+    },
+    "金融": {
+        "stocks": ["富邦金", "國泰金", "中信金", "兆豐金", "元大金", "玉山金"],
+        "drivers": ["JPM", "BAC", "WFC", "C", "GS", "MS", "^TNX"],
+    },
+    "航運": {
+        "stocks": ["長榮", "陽明", "萬海", "長榮航", "華航", "裕民"],
+        "drivers": ["FDX", "UPS", "DAL", "UAL", "AAL", "ZIM", "CL=F"],
+    },
+    "鋼鐵 / 原物料": {
+        "stocks": ["中鋼", "中鴻", "燁輝", "大成鋼", "榮剛"],
+        "drivers": ["X", "NUE", "CLF", "VALE", "BHP", "FCX"],
+    },
+    "塑化 / 能源": {
+        "stocks": ["台塑", "南亞", "台化", "台塑化", "中石化"],
+        "drivers": ["XOM", "CVX", "OXY", "COP", "CL=F"],
+    },
+    "重電 / 電網": {
+        "stocks": ["華城", "士電", "中興電", "亞力", "大同", "東元"],
+        "drivers": ["GE", "ETN", "ABB", "TSLA", "NVDA", "NEE"],
+    },
+    "綠能 / 儲能": {
+        "stocks": ["元晶", "聯合再生", "茂迪", "中興電", "華城", "台達電"],
+        "drivers": ["ENPH", "SEDG", "FSLR", "TSLA", "NEE"],
+    },
+    "營建 / 資產": {
+        "stocks": ["華固", "長虹", "興富發", "國建", "潤泰新", "遠雄"],
+        "drivers": ["^TNX", "VNQ", "JPM", "BAC"],
+    },
+    "生技醫療": {
+        "stocks": ["保瑞", "藥華藥", "美時", "中裕", "台康生技", "智擎"],
+        "drivers": ["LLY", "NVO", "UNH", "PFE", "MRNA", "BIIB"],
+    },
+    "觀光餐飲": {
+        "stocks": ["王品", "瓦城", "雄獅", "鳳凰", "晶華", "雲品"],
+        "drivers": ["BKNG", "ABNB", "MAR", "HLT", "MCD", "SBUX"],
+    },
+    "零售通路": {
+        "stocks": ["統一超", "全家", "寶雅", "富邦媒", "潤泰全"],
+        "drivers": ["WMT", "COST", "TGT", "HD", "AMZN"],
+    },
+    "遊戲 / 軟體": {
+        "stocks": ["智冠", "橘子", "鈊象", "精誠", "凌群", "零壹"],
+        "drivers": ["MSFT", "ADBE", "CRM", "NOW", "EA", "TTWO", "PLTR"],
+    },
+    "加密概念": {
+        "stocks": ["技嘉", "微星", "華擎", "撼訊", "映泰"],
+        "drivers": ["BTC-USD", "COIN", "MSTR", "MARA", "RIOT"],
+    },
+    "高股息 / ETF": {
+        "stocks": ["0056", "00878", "00919", "00929", "00713"],
+        "drivers": ["^TNX", "DX-Y.NYB", "SPY", "QQQ"],
+    },
+}
+
+
+def build_core_driver_df(active_df: pd.DataFrame, watch_rows: List[dict], cross_rows: List[dict]) -> pd.DataFrame:
+    """
+    建立美股核心驅動資料。
+    active_df 有資料就先用；不足的 driver 再用 Yahoo quote 補。
+    """
+    rows = []
+
+    if active_df is not None and not active_df.empty:
+        for _, r in active_df.iterrows():
+            rows.append({
+                "symbol": str(r.get("symbol", "")).upper(),
+                "chg_pct": r.get("chg_pct"),
+                "amount_usd": r.get("amount_usd", 0),
+            })
+
+    # watchlist 補：NQ / SOX / TSM / NVDA
+    for r in watch_rows or []:
+        rows.append({
+            "symbol": str(r.get("symbol", "")).upper(),
+            "chg_pct": r.get("pct"),
+            "amount_usd": 5_000_000_000,
+        })
+
+    # 跨市場補：BTC / 原油 / 美債 / 美元
+    for r in cross_rows or []:
+        sym = str(r.get("symbol", "")).upper()
+        chg = r.get("chg")
+        rows.append({
+            "symbol": sym,
+            "chg_pct": chg,
+            "amount_usd": 3_000_000_000,
+        })
+
+    have = {r["symbol"] for r in rows if r.get("symbol")}
+    need = sorted({s.upper() for g in TAIWAN_GROUP_RADAR.values() for s in g.get("drivers", []) if s.upper() not in have})
+
+    # 補固定觀察池，避免盤勢平淡時沒資料
+    if need:
+        q = yahoo_quote(need[:80])
+        for sym, item in q.items():
+            rows.append({
+                "symbol": str(sym).upper(),
+                "chg_pct": item.get("regularMarketChangePercent"),
+                "amount_usd": (item.get("regularMarketPrice") or 0) * (item.get("regularMarketVolume") or 0),
+            })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df["chg_pct"] = pd.to_numeric(df["chg_pct"], errors="coerce")
+    df["amount_usd"] = pd.to_numeric(df["amount_usd"], errors="coerce").fillna(0)
+    df = df.dropna(subset=["symbol", "chg_pct"])
+    df = df.drop_duplicates(subset=["symbol"], keep="first")
+    return df
+
+
+def build_tw_group_radar(active_df: pd.DataFrame, watch_rows: List[dict], cross_rows: List[dict], topn=10) -> List[dict]:
+    """
+    台股族群盤前雷達：
+    候選族群很多，但輸出維持 Top 10。
+    分數 = 美股/跨市場驅動漲跌幅 × 成交金額權重 × 驅動關聯權重。
+    """
+    driver_df = build_core_driver_df(active_df, watch_rows, cross_rows)
+
+    if driver_df is None or driver_df.empty:
+        # 完全沒資料時仍給固定觀察族群
+        fallback = list(TAIWAN_GROUP_RADAR.items())[:topn]
+        return [
+            {
+                "group": k,
+                "tone": "觀察",
+                "drivers": "-",
+                "stocks": "、".join(v.get("stocks", [])[:5]),
+                "score": 0,
+            }
+            for k, v in fallback
+        ]
+
+    driver_map = {str(r["symbol"]).upper(): r for _, r in driver_df.iterrows()}
+    out = []
+
+    for group, cfg in TAIWAN_GROUP_RADAR.items():
+        score = 0.0
+        signed = 0.0
+        used = []
+
+        for pos, sym in enumerate(cfg.get("drivers", [])):
+            sym = str(sym).upper()
+            r = driver_map.get(sym)
+            if r is None:
+                continue
+
+            pct = float(r.get("chg_pct", 0) or 0)
+            amt = float(r.get("amount_usd", 0) or 0)
+            amount_weight = min(3.0, max(1.0, math.log10(max(amt, 1)) / 3.5))
+            relation_weight = max(1.0, 8 - pos)
+            s = pct * amount_weight * relation_weight
+
+            signed += s
+            score += abs(s)
+            used.append(sym)
+
+        if signed >= 8:
+            tone = "偏強"
+        elif signed <= -8:
+            tone = "偏弱"
+        elif abs(signed) >= 3:
+            tone = "分歧"
+        else:
+            tone = "觀察"
+
+        out.append({
+            "group": group,
+            "tone": tone,
+            "drivers": " / ".join(used[:4]) if used else "-",
+            "stocks": "、".join(cfg.get("stocks", [])[:5]),
+            "score": round(score, 1),
+            "signed": round(signed, 1),
+        })
+
+    # 先看有動的族群，再以分數排序；仍維持 Top 10
+    out = sorted(out, key=lambda x: (x["score"], abs(x["signed"])), reverse=True)
+    return out[:topn]
+
+
+def format_tw_group_radar(items: List[dict]) -> List[str]:
+    if not items:
+        return ["資料暫時不足"]
+    rows = []
+    for i, item in enumerate(items[:10], 1):
+        rows.append(
+            f"{i}. {item['group']}｜{item['tone']}｜{item['drivers']}｜{item['stocks']}"
+        )
+    return rows
+
+
+
 def expected_us_trade_day(tw=None) -> str:
     """以台灣 07:00 排程來看，預期為紐約前一個美股交易日。"""
     tw = tw or now_tw()
@@ -669,10 +935,12 @@ def get_market_data():
     strong_top, weak_top = get_strong_weak(active_df, 10)
     inflow_sector_top = build_inflow_sector_rank(active_df, 10)
     cross_rows = get_cross_market_rows()
-    return active_df, strong_top, weak_top, inflow_sector_top, cross_rows
+    watch_rows = get_watchlist_rows()
+    tw_group_radar = build_tw_group_radar(active_df, watch_rows, cross_rows, topn=10)
+    return active_df, strong_top, weak_top, inflow_sector_top, cross_rows, watch_rows, tw_group_radar
 
 
-def make_report(active_df: pd.DataFrame, strong_top: pd.DataFrame, weak_top: pd.DataFrame, inflow_sector_top: pd.DataFrame, cross_rows: List[dict]) -> str:
+def make_report(active_df: pd.DataFrame, strong_top: pd.DataFrame, weak_top: pd.DataFrame, inflow_sector_top: pd.DataFrame, cross_rows: List[dict], watch_rows: List[dict], tw_group_radar: List[dict]) -> str:
     tw = now_tw()
     ny = tw.astimezone(NY_TZ)
 
@@ -710,6 +978,11 @@ def make_report(active_df: pd.DataFrame, strong_top: pd.DataFrame, weak_top: pd.
     lines.append("━━━━━━━━━━━━━━")
     lines.append("📌 台股盤前偏向")
     lines.extend(premarket_bias_lines(strong_top, weak_top, cross_rows))
+
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append("🇹🇼 台股族群盤前雷達 Top 10")
+    lines.extend(format_tw_group_radar(tw_group_radar))
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━")
@@ -762,8 +1035,8 @@ def save_csv(strong_top: pd.DataFrame, weak_top: pd.DataFrame, inflow_sector_top
 
 
 def main():
-    active_df, strong_top, weak_top, inflow_sector_top, cross_rows = get_market_data()
-    report = make_report(active_df, strong_top, weak_top, inflow_sector_top, cross_rows)
+    active_df, strong_top, weak_top, inflow_sector_top, cross_rows, watch_rows, tw_group_radar = get_market_data()
+    report = make_report(active_df, strong_top, weak_top, inflow_sector_top, cross_rows, watch_rows, tw_group_radar)
     print(report)
     save_csv(strong_top, weak_top, inflow_sector_top)
     send_telegram(report)
