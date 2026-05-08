@@ -1,4 +1,4 @@
-# 市場資金流雷達 v1.5
+# 市場資金流雷達 v1.7
 # 功能：
 # - 抓上市權證每日收盤行情（TWSE 官方資料）
 # - 盡量抓上櫃權證每日收盤行情（TPEx 官方資料，若抓不到會保留上市資料）
@@ -6,7 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
-# - 權證買賣超 TOP10：永豐金權證網優先，富邦權證財神網備援，並標示來源
+# - 權證買賣超 TOP10：永豐金權證網優先，富邦權證財神網備援；支援 Playwright 動態頁面解析
 
 import io
 import os
@@ -1027,10 +1027,10 @@ def fetch_sinotrade_warrant_bs_top10():
         if hit_count:
             print(f"永豐金權證買賣超：成功抓到 {hit_count} 筆。")
         else:
-            print("永豐金權證買賣超：未抓到可用資料，改用 HiStock 備援。")
+            print("永豐金權證買賣超：未抓到可用資料，改用富邦備援。")
 
     except Exception as e:
-        print(f"永豐金權證買賣超抓取失敗，改用 HiStock 備援：{e}")
+        print(f"永豐金權證買賣超抓取失敗，改用富邦備援：{e}")
 
     return mark_warrant_bs_source(out, "永豐金")
 
@@ -1306,17 +1306,26 @@ def fetch_warrant_bs_top10():
     資料源優先序：
     1) 永豐金權證網：第一順位
     2) 富邦權證財神網：備援來源
+    3) HiStock：最後保底，避免永豐 / 富邦頁面改版時整段空白
 
     補充：富邦公開頁若沒有投資人買賣超金額表，程式會用成交值排行榜作熱度備援，
     並在來源欄標成「富邦備援-成交值」，避免和永豐金買賣超混淆。
     """
     primary = fetch_sinotrade_warrant_bs_top10()
-    need_fallback = any(primary.get(k) is None or primary.get(k).empty for k in primary.keys())
-    if not need_fallback:
+    need_fubon = any(primary.get(k) is None or primary.get(k).empty for k in primary.keys())
+    if not need_fubon:
         return primary
 
-    fallback = fetch_fubon_warrant_bs_top10()
-    return merge_warrant_bs_sources(primary, fallback)
+    fubon = fetch_fubon_warrant_bs_top10()
+    merged = merge_warrant_bs_sources(primary, fubon)
+
+    # 永豐 + 富邦仍補不滿時，才用 HiStock 最後保底，避免 Telegram 長期顯示資料不足。
+    need_histock = any(merged.get(k) is None or merged.get(k).empty for k in merged.keys())
+    if not need_histock:
+        return merged
+
+    histock = mark_warrant_bs_source(fetch_histock_warrant_bs_top10(), "HiStock保底")
+    return merge_warrant_bs_sources(merged, histock)
 
 
 def fetch_histock_warrant_bs_top10():
@@ -1706,6 +1715,404 @@ def fetch_histock_warrant_bs_top10():
 
 
 
+
+# ============================================================
+# v1.7 動態頁面強化版：永豐金主來源 + 富邦備援
+# 說明：永豐金 marketW.jsp 與富邦 wRank.aspx 的資料多為 JS/XHR 動態載入，
+#      requests 抓初始 HTML 可能只有分類文字而沒有資料列。
+#      這裡新增 Playwright 渲染後解析，並保留原本 requests/HiStock 保底。
+# ============================================================
+
+
+def _warrant_empty_hit_count(bs):
+    if not bs:
+        return 0
+    return sum(0 if df is None or df.empty else len(df) for df in bs.values())
+
+
+def _parse_amount_to_yuan_any(v):
+    """把各站常見金額字串轉成元；支援 元 / 千元 / 萬 / 億。"""
+    try:
+        s = str(v).replace(',', '').replace('+', '').replace('−', '-').strip()
+        if s in ['', '-', '--', 'nan', 'None']:
+            return None
+        unit = 1.0
+        if '千元' in s:
+            unit = 1000.0
+        elif '億元' in s or '億' in s:
+            unit = 100_000_000.0
+        elif '萬元' in s or '萬' in s:
+            unit = 10_000.0
+        s = s.replace('千元', '').replace('億元', '').replace('萬元', '').replace('億', '').replace('萬', '').replace('元', '')
+        s = re.sub(r'[^0-9.\-]', '', s)
+        if s in ['', '-', '.']:
+            return None
+        return float(s) * unit
+    except Exception:
+        return None
+
+
+def _fmt_amount_wan_any(v):
+    try:
+        return f"{float(v) / 10_000:.1f}萬"
+    except Exception:
+        return ''
+
+
+def _clean_warrant_name_any(v):
+    s = str(v).replace('\n', '').replace('\r', '').strip()
+    s = re.sub(r'\s+', '', s)
+    # 常見：042987仲琦群益55購01，先移除純代號前綴
+    s = re.sub(r'^\d{4,6}', '', s)
+    return s
+
+
+def _split_rendered_text_rows(body_text):
+    """從渲染後文字抓可能的權證資料列，作為 HTML table 解析失敗時的備援。"""
+    rows = []
+    for raw in str(body_text or '').splitlines():
+        line = re.sub(r'\s+', ' ', raw).strip()
+        if not line or not any(k in line for k in ['購', '售', '牛', '熊']):
+            continue
+        if any(k in line for k in ['排行榜', '認購 當日', '資料數', '權證排行榜', '註1', '註2']):
+            continue
+        # 權證名：通常含購/售/牛/熊，允許前面有代碼
+        name_m = re.search(r'(?:\d{4,6}\s*)?([\u4e00-\u9fffA-Za-z0-9\.\-]{2,40}[購售牛熊][\u4e00-\u9fffA-Za-z0-9\.\-]*)', line)
+        if not name_m:
+            continue
+        name = _clean_warrant_name_any(name_m.group(1))
+        nums = re.findall(r'[-+]?\d[\d,]*(?:\.\d+)?\s*(?:億|萬|千元|元)?', line)
+        nums2 = []
+        for n in nums:
+            val = _parse_amount_to_yuan_any(n)
+            if val is not None:
+                nums2.append(val)
+        if not nums2:
+            continue
+        # 金額通常是較大的那個數字；若只有成交價/履約價，會偏小，後面再過濾
+        amount = max(nums2, key=lambda x: abs(x))
+        if abs(amount) < 1000:
+            continue
+        rows.append({'名稱': name, '認購認售': infer_cp_type(name), '金額_num': amount})
+    if not rows:
+        return pd.DataFrame(columns=['名稱', '認購認售', '金額', '金額_num'])
+    y = pd.DataFrame(rows).drop_duplicates(subset=['名稱'])
+    y = y[y['認購認售'].isin(['認購', '認售'])]
+    y['金額'] = y['金額_num'].apply(_fmt_amount_wan_any)
+    return y[['名稱', '認購認售', '金額', '金額_num']]
+
+
+def _parse_rendered_tables_to_rank(html, side_word=None, prefer_bs=True):
+    """通用表格解析：抓名稱欄 + 金額欄，回傳含 認購認售 / 金額_num。"""
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        return pd.DataFrame(columns=['名稱', '認購認售', '金額', '金額_num'])
+
+    def flatten_columns(df):
+        x = df.copy()
+        cols = []
+        for c in x.columns:
+            if isinstance(c, tuple):
+                cols.append(''.join([str(v) for v in c if str(v) != 'nan']).replace('\n', '').replace(' ', ''))
+            else:
+                cols.append(str(c).replace('\n', '').replace(' ', ''))
+        x.columns = cols
+        return x
+
+    def pick_col(cols, include, exclude=None):
+        exclude = exclude or []
+        for c in cols:
+            cs = str(c)
+            if any(k in cs for k in include) and not any(k in cs for k in exclude):
+                return c
+        return None
+
+    candidates = []
+    soup = BeautifulSoup(html or '', 'html.parser')
+    for tb in soup.find_all('table'):
+        context = tb.get_text(' ', strip=True)
+        p = tb.parent
+        for _ in range(3):
+            if p is None:
+                break
+            context += ' ' + p.get_text(' ', strip=True)[:2000]
+            p = p.parent
+        try:
+            arr = pd.read_html(io.StringIO(str(tb)))
+        except Exception:
+            arr = []
+        if not arr:
+            continue
+        x = flatten_columns(arr[0]).dropna(how='all')
+        if x.empty:
+            continue
+        cols = list(x.columns)
+        name_col = pick_col(cols, ['權證名稱', '名稱', '商品', '權證商品'], exclude=['標的'])
+        amt_col = None
+        if prefer_bs:
+            amt_col = pick_col(cols, ['買賣超金額', '買超金額', '賣超金額', '金額'], exclude=['成交量'])
+        if amt_col is None:
+            amt_col = pick_col(cols, ['成交值', '成交金額', '買賣超金額', '金額'], exclude=['成交量'])
+        cp_col = pick_col(cols, ['權證類型', '類型', '認購', '認售'])
+
+        if name_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ['代號', '排名', '金額', '成交', '張', '比例', '%', 'IV', '天數', '價']):
+                    continue
+                vals = x[c].astype(str).head(100).tolist()
+                score = sum(1 for v in vals if any(k in v for k in ['購', '售', '牛', '熊']))
+                if score > best_score:
+                    best_col, best_score = c, score
+            if best_score >= 3:
+                name_col = best_col
+
+        if amt_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ['代號', '排名', '張', '比例', '%', 'IV', '天數', '價格', '價內外', '槓桿', '履約']):
+                    continue
+                nums = x[c].apply(_parse_amount_to_yuan_any).dropna()
+                if len(nums) < 3:
+                    continue
+                score = len(nums) + min(nums.abs().median() / 1_000_000, 50)
+                if prefer_bs and any(k in cs for k in ['買賣超', '買超', '賣超', '金額']):
+                    score += 20
+                if not prefer_bs and any(k in cs for k in ['成交值', '成交金額']):
+                    score += 20
+                if score > best_score:
+                    best_col, best_score = c, score
+            amt_col = best_col
+
+        if name_col is None or amt_col is None:
+            continue
+
+        y = x[[name_col, amt_col]].copy()
+        y.columns = ['名稱', '原始金額']
+        y['名稱'] = y['名稱'].apply(_clean_warrant_name_any)
+        y['金額_num'] = y['原始金額'].apply(_parse_amount_to_yuan_any)
+        if cp_col is not None and cp_col in x.columns:
+            y['認購認售'] = x[cp_col].astype(str).apply(lambda v: '認售' if '售' in v or '熊' in v else '認購' if '購' in v or '牛' in v else '-')
+        else:
+            y['認購認售'] = y['名稱'].apply(infer_cp_type)
+        y = y.dropna(subset=['金額_num'])
+        y = y[y['名稱'].apply(is_warrant_name)]
+        y = y[y['認購認售'].isin(['認購', '認售'])]
+        if y.empty:
+            continue
+        if side_word == '賣超' and (y['金額_num'] < 0).any():
+            y = y.sort_values('金額_num', ascending=True)
+        else:
+            y = y.sort_values('金額_num', ascending=False)
+        y['金額'] = y['金額_num'].apply(_fmt_amount_wan_any)
+        score = len(y)
+        if '投資人' in context:
+            score += 10
+        if side_word and side_word in context:
+            score += 10
+        if '金額' in context:
+            score += 5
+        if '成交值' in context:
+            score += 3
+        candidates.append((score, y[['名稱', '認購認售', '金額', '金額_num']]))
+    if not candidates:
+        return pd.DataFrame(columns=['名稱', '認購認售', '金額', '金額_num'])
+    candidates.sort(key=lambda z: z[0], reverse=True)
+    return candidates[0][1]
+
+
+def _rank_df_to_bs(y, side_word, amount_label_source=False):
+    out = empty_warrant_bs_top10()
+    if y is None or y.empty:
+        return out
+    x = y.copy()
+    if side_word == '賣超' and (x['金額_num'] < 0).any():
+        x = x.sort_values('金額_num', ascending=True)
+    else:
+        x = x.sort_values('金額_num', ascending=False)
+    for cp in ['認購', '認售']:
+        key = f'{cp}{side_word}'
+        sub = x[x['認購認售'] == cp].head(10).copy()
+        if not sub.empty:
+            out[key] = sub[['名稱', '金額']]
+    return out
+
+
+def _merge_warrant_bs_many(*sources):
+    out = empty_warrant_bs_top10()
+    for src in sources:
+        if not src:
+            continue
+        for key in out.keys():
+            cur = out.get(key)
+            new = src.get(key)
+            if (cur is None or cur.empty) and new is not None and not new.empty:
+                out[key] = new
+    return out
+
+
+def _playwright_available():
+    try:
+        import playwright.sync_api  # noqa
+        return True
+    except Exception:
+        return False
+
+
+def _render_with_playwright(url, clicks=None, wait_ms=2500):
+    """回傳 [(label, html, body_text)]；clicks 可傳要點擊的文字列表。"""
+    results = []
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print(f'Playwright 未安裝，略過動態渲染：{e}')
+        return results
+
+    clicks = clicks or []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+            page = browser.new_page(locale='zh-TW', viewport={'width': 1365, 'height': 1600})
+            page.set_default_timeout(15000)
+            page.goto(url, wait_until='domcontentloaded', timeout=45000)
+            try:
+                page.wait_for_load_state('networkidle', timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(wait_ms)
+            results.append(('initial', page.content(), page.locator('body').inner_text(timeout=10000)))
+            for txt in clicks:
+                try:
+                    page.get_by_text(txt, exact=False).first.click(timeout=10000)
+                    try:
+                        page.wait_for_load_state('networkidle', timeout=10000)
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(wait_ms)
+                    results.append((txt, page.content(), page.locator('body').inner_text(timeout=10000)))
+                except Exception as e:
+                    print(f'Playwright 點擊失敗：{txt}｜{e}')
+            browser.close()
+    except Exception as e:
+        print(f'Playwright 渲染失敗：{url}｜{e}')
+    return results
+
+
+def fetch_sinotrade_warrant_bs_top10():
+    """永豐金權證網：優先用 Playwright 渲染後抓投資人買/賣超權證_金額排行。"""
+    out = empty_warrant_bs_top10()
+    url = 'https://warrant.sinotrade.com.tw/j/marketW.jsp'
+
+    # 1) 先嘗試舊 requests 解析（若未來永豐改回靜態表格仍可用）
+    try:
+        html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-TW,zh;q=0.9'}, timeout=30).text
+        for side in ['買超', '賣超']:
+            y = _parse_rendered_tables_to_rank(html, side_word=side, prefer_bs=True)
+            if y is not None and not y.empty:
+                out = _merge_warrant_bs_many(out, _rank_df_to_bs(y, side))
+    except Exception as e:
+        print(f'永豐金靜態解析失敗：{e}')
+
+    if _warrant_empty_hit_count(out) >= 20:
+        return mark_warrant_bs_source(out, '永豐金')
+
+    # 2) 動態頁面：點擊金額排行再抓表格/文字
+    clicks = ['投資人買超權證_金額排行', '投資人賣超權證_金額排行']
+    rendered = _render_with_playwright(url, clicks=clicks, wait_ms=3000)
+    for label, html, body_text in rendered:
+        side = '買超' if '買超' in label else '賣超' if '賣超' in label else None
+        if side is None:
+            continue
+        y = _parse_rendered_tables_to_rank(html, side_word=side, prefer_bs=True)
+        if y is None or y.empty:
+            y = _split_rendered_text_rows(body_text)
+        if y is not None and not y.empty:
+            out = _merge_warrant_bs_many(out, _rank_df_to_bs(y, side))
+
+    hit = _warrant_empty_hit_count(out)
+    if hit:
+        print(f'永豐金權證買賣超：成功抓到 {hit} 筆。')
+    else:
+        print('永豐金權證買賣超：仍未抓到資料，改用富邦備援。')
+    return mark_warrant_bs_source(out, '永豐金')
+
+
+def fetch_fubon_warrant_bs_top10():
+    """富邦權證財神網：備援來源。優先抓成交值排行榜；若頁面有買賣超字樣也可解析買/賣超。"""
+    out = empty_warrant_bs_top10()
+    url = 'https://warrants.fbs.com.tw/want/wRank.aspx?'
+
+    # 1) 靜態 HTML 先抓一次；富邦初始 HTML 可能只有欄位、無資料列。
+    try:
+        html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'zh-TW,zh;q=0.9'}, timeout=30).text
+        y = _parse_rendered_tables_to_rank(html, side_word='買超', prefer_bs=False)
+        if y is not None and not y.empty:
+            # 富邦排行榜不是投資人買賣超；只放買超欄作熱度備援，賣超留空避免誤導。
+            out = _merge_warrant_bs_many(out, _rank_df_to_bs(y, '買超'))
+    except Exception as e:
+        print(f'富邦靜態解析失敗：{e}')
+
+    if _warrant_empty_hit_count(out) >= 10:
+        return mark_warrant_bs_source(out, '富邦備援-成交值')
+
+    # 2) 動態渲染：點成交值排行榜、認購/認售、當日。
+    clicks = ['成交值排行榜', '認購', '當日', '認售', '當日']
+    rendered = _render_with_playwright(url, clicks=clicks, wait_ms=2500)
+
+    call_rank = pd.DataFrame()
+    put_rank = pd.DataFrame()
+    any_rank = pd.DataFrame()
+    for label, html, body_text in rendered:
+        y = _parse_rendered_tables_to_rank(html, side_word='買超', prefer_bs=False)
+        if y is None or y.empty:
+            y = _split_rendered_text_rows(body_text)
+        if y is None or y.empty:
+            continue
+        if label == '認購':
+            call_rank = y[y['認購認售'] == '認購']
+        elif label == '認售':
+            put_rank = y[y['認購認售'] == '認售']
+        else:
+            any_rank = pd.concat([any_rank, y], ignore_index=True) if not any_rank.empty else y
+
+    # 若點擊後無法分辨狀態，就用全表依名稱拆認購/認售。
+    rank = pd.concat([call_rank, put_rank], ignore_index=True) if (not call_rank.empty or not put_rank.empty) else any_rank
+    if rank is not None and not rank.empty:
+        out = _merge_warrant_bs_many(out, _rank_df_to_bs(rank, '買超'))
+
+    hit = _warrant_empty_hit_count(out)
+    if hit:
+        print(f'富邦權證備援：成功抓到 {hit} 筆成交值熱度資料。')
+    else:
+        print('富邦權證備援：仍未抓到可用資料。')
+    return mark_warrant_bs_source(out, '富邦備援-成交值')
+
+
+def fetch_warrant_bs_top10():
+    """
+    權證 TOP10 優化版。
+    來源順序：
+    1) 永豐金：投資人買超 / 賣超權證「金額排行」主來源。
+    2) 富邦：權證成交值排行榜備援熱度，來源標成「富邦備援-成交值」。
+    3) HiStock：最後保底。
+    """
+    sinotrade = fetch_sinotrade_warrant_bs_top10()
+    if _warrant_empty_hit_count(sinotrade) >= 20:
+        return sinotrade
+
+    fubon = fetch_fubon_warrant_bs_top10()
+    merged = _merge_warrant_bs_many(sinotrade, fubon)
+
+    # 如果還是缺賣超欄，最後用 HiStock 保底補洞。
+    if any(merged.get(k) is None or merged.get(k).empty for k in merged.keys()):
+        histock = mark_warrant_bs_source(fetch_histock_warrant_bs_top10(), 'HiStock保底')
+        merged = _merge_warrant_bs_many(merged, histock)
+    return merged
+
+
 def warrant_bs_rank_lines(df):
     if df is None or df.empty:
         return ["資料不足"]
@@ -1740,9 +2147,19 @@ def append_warrant_bs_top10_section(lines, bs):
 
 
 def expected_market_data_day(now=None):
-    """預期資料日：這版排程固定週一～週五 18:00 跑，因此以執行當天作為預期資料日。"""
+    """
+    預期資料日：
+    - 15:00 以前執行，通常只能抓到上一個台股交易日資料。
+    - 15:00 以後執行，才以執行當天作為預期資料日。
+    這樣早上 08:07 推播不會誤判成「尚未更新」。
+    """
     now = now or now_taipei()
-    return now.strftime("%Y%m%d")
+    d = now.date()
+    if now.time() < time(15, 0):
+        d = d - timedelta(days=1)
+        while d.weekday() >= 5:
+            d = d - timedelta(days=1)
+    return d.strftime("%Y%m%d")
 
 
 def data_update_status(df, now=None):
@@ -1942,8 +2359,20 @@ def main():
     foreign_buy_top.to_csv("foreign_buy_top15_v13.csv", index=False, encoding="utf-8-sig")
     foreign_sell_top.to_csv("foreign_sell_top15_v13.csv", index=False, encoding="utf-8-sig")
 
-    write_sheet(report, df, market_vol_top, market_amt_top, warrant_vol_top, warrant_amt_top, focus, foreign_buy_top, foreign_sell_top)
+    # 先推 Telegram，再寫 Google Sheet。
+    # 避免 gspread / Google Sheets 暫時性 500 錯誤導致整支程式中斷、Telegram 也沒推播。
     send_telegram(report)
+
+    try:
+        write_sheet(report, df, market_vol_top, market_amt_top, warrant_vol_top, warrant_amt_top, focus, foreign_buy_top, foreign_sell_top)
+    except Exception as e:
+        err_msg = f"⚠️ Google Sheet 寫入失敗，但 Telegram 報告已先推播。\n錯誤：{type(e).__name__}: {e}"
+        print(err_msg)
+        # 再補一則短訊提醒，避免只看 Telegram 不知道 Sheet 沒寫入。
+        try:
+            send_telegram(err_msg)
+        except Exception as te:
+            print(f"Google Sheet 失敗提醒也推播失敗：{te}")
 
 
 if __name__ == "__main__":
