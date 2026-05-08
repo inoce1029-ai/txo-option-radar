@@ -1,4 +1,4 @@
-# 市場資金流雷達 v1.4
+# 市場資金流雷達 v1.5
 # 功能：
 # - 抓上市權證每日收盤行情（TWSE 官方資料）
 # - 盡量抓上櫃權證每日收盤行情（TPEx 官方資料，若抓不到會保留上市資料）
@@ -6,7 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
-# - 權證買賣超 TOP10：永豐金權證網優先，HiStock 備援，並標示來源
+# - 權證買賣超 TOP10：永豐金權證網優先，富邦權證財神網備援，並標示來源
 
 import io
 import os
@@ -1036,7 +1036,7 @@ def fetch_sinotrade_warrant_bs_top10():
 
 
 def merge_warrant_bs_sources(primary, fallback):
-    """四個分類逐項補洞：永豐金有資料就用永豐金，缺的分類才用 HiStock。"""
+    """四個分類逐項補洞：永豐金有資料就用永豐金，缺的分類才用備援來源。"""
     out = empty_warrant_bs_top10()
     for key in out.keys():
         p = primary.get(key) if primary else pd.DataFrame()
@@ -1045,22 +1045,277 @@ def merge_warrant_bs_sources(primary, fallback):
     return out
 
 
+def fetch_fubon_warrant_bs_top10():
+    """
+    權證盤後 TOP10：富邦權證財神網備援來源。
+
+    注意：富邦公開頁主要是「權證排行榜」（成交量 / 成交值 / 漲跌幅 / IV 等），
+    不一定提供與永豐金相同的「投資人買賣超金額」欄位。
+    因此這裡採兩段式：
+    1) 若頁面上有買超 / 賣超 / 金額相關表格，就依買賣超解析。
+    2) 若沒有買賣超表格，改用成交值排行榜當備援熱度，
+       並把來源標成「富邦備援-成交值」，避免誤認為永豐金買賣超。
+    """
+    out = empty_warrant_bs_top10()
+
+    urls = [
+        "https://warrants.fbs.com.tw/want/wRank.aspx",
+        "https://www.fbs.com.tw/MKT/DomesticWarrant",
+        "https://fubon-ebrokerdj.fbs.com.tw/WRT/zx/zxd/zxd.djhtm?a=3",
+    ]
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://warrants.fbs.com.tw/",
+        "Connection": "keep-alive",
+    }
+
+    def flatten_columns(df):
+        x = df.copy()
+        cols = []
+        for c in x.columns:
+            if isinstance(c, tuple):
+                cols.append("".join([str(v) for v in c if str(v) != "nan"]).replace("\n", "").replace(" ", ""))
+            else:
+                cols.append(str(c).replace("\n", "").replace(" ", ""))
+        x.columns = cols
+        return x
+
+    def parse_amount_to_yuan(v):
+        try:
+            s = str(v).replace(",", "").replace("+", "").replace("−", "-").strip()
+            if s in ["", "-", "--", "nan", "None"]:
+                return None
+            unit = 1
+            if "千元" in s:
+                unit = 1000
+            elif "億" in s:
+                unit = 100_000_000
+            elif "萬" in s:
+                unit = 10_000
+            s = s.replace("千元", "").replace("億", "").replace("萬", "")
+            return float(s) * unit
+        except Exception:
+            return None
+
+    def fmt_amount_wan(v):
+        try:
+            return f"{float(v) / 10_000:.1f}萬"
+        except Exception:
+            return ""
+
+    def clean_name(v):
+        s = str(v).replace("\n", "").replace("\r", "").strip()
+        s = re.sub(r"\s+", "", s)
+        # 常見格式：042987 仲琦群益55購01
+        s = re.sub(r"^\d{4,6}", "", s)
+        return s
+
+    def pick_col(cols, keywords, exclude=None):
+        exclude = exclude or []
+        for c in cols:
+            cs = str(c)
+            if any(k in cs for k in keywords) and not any(x in cs for x in exclude):
+                return c
+        return None
+
+    def parse_fubon_table(df, mode, side_word=None):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+        x = flatten_columns(df).dropna(how="all").copy()
+        if x.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        cols = list(x.columns)
+        name_col = pick_col(cols, ["權證商品", "權證名稱", "名稱", "商品"], exclude=["標的"])
+        cp_col = pick_col(cols, ["權證類型", "類型", "認購", "認售"])
+
+        if mode == "bs":
+            amt_col = pick_col(cols, ["買賣超金額", "買超金額", "賣超金額", "金額"], exclude=["成交"])
+        else:
+            amt_col = pick_col(cols, ["成交值", "成交金額", "金額"], exclude=["買賣超"])
+
+        if name_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ["代號", "排名", "金額", "成交", "張", "比例", "%"]):
+                    continue
+                vals = x[c].astype(str).head(80).tolist()
+                score = sum(1 for v in vals if any(k in v for k in ["購", "售", "牛", "熊"]))
+                if score > best_score:
+                    best_col, best_score = c, score
+            if best_score >= 3:
+                name_col = best_col
+
+        if amt_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ["代號", "排名", "張", "比例", "%", "IV", "天數", "價格", "價"]):
+                    continue
+                nums = x[c].apply(parse_amount_to_yuan).dropna()
+                if len(nums) < 3:
+                    continue
+                score = len(nums) + min(nums.abs().median() / 1_000_000, 50)
+                if score > best_score:
+                    best_col, best_score = c, score
+            amt_col = best_col
+
+        if name_col is None or amt_col is None:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        y = x[[name_col, amt_col]].copy()
+        y.columns = ["名稱", "原始金額"]
+        y["名稱"] = y["名稱"].apply(clean_name)
+        y["金額_num"] = y["原始金額"].apply(parse_amount_to_yuan)
+        if cp_col is not None and cp_col in x.columns:
+            y["認購認售"] = x[cp_col].astype(str).apply(lambda v: "認售" if "售" in v or "熊" in v else "認購" if "購" in v or "牛" in v else "-")
+        else:
+            y["認購認售"] = y["名稱"].apply(infer_cp_type)
+
+        y = y.dropna(subset=["金額_num"])
+        y = y[y["名稱"].apply(is_warrant_name)]
+        y = y[y["認購認售"].isin(["認購", "認售"])]
+        if y.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        if mode == "bs" and side_word == "賣超":
+            y = y.sort_values("金額_num", ascending=True if (y["金額_num"] < 0).any() else False)
+        else:
+            y = y.sort_values("金額_num", ascending=False)
+
+        y = y.head(60).copy()
+        y["金額"] = y["金額_num"].apply(fmt_amount_wan)
+        return y[["名稱", "認購認售", "金額", "金額_num"]]
+
+    try:
+        from bs4 import BeautifulSoup
+        all_tables = []
+        for url in urls:
+            try:
+                r = requests.get(url, headers=headers, timeout=30)
+                r.raise_for_status()
+                if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                    r.encoding = r.apparent_encoding
+                html = r.text
+                soup = BeautifulSoup(html, "html.parser")
+                for tb in soup.find_all("table"):
+                    context_parts = [tb.get_text(" ", strip=True)]
+                    p = tb.parent
+                    for _ in range(3):
+                        if p is None:
+                            break
+                        context_parts.append(p.get_text(" ", strip=True)[:2000])
+                        p = p.parent
+                    prev = tb.find_previous()
+                    for _ in range(8):
+                        if prev is None:
+                            break
+                        try:
+                            context_parts.append(prev.get_text(" ", strip=True)[:600])
+                        except Exception:
+                            pass
+                        prev = prev.find_previous()
+                    context = " ".join(context_parts)
+                    try:
+                        arr = pd.read_html(io.StringIO(str(tb)))
+                    except Exception:
+                        arr = []
+                    if arr:
+                        all_tables.append((url, context, arr[0]))
+            except Exception as e:
+                print(f"富邦權證備援抓取失敗：{url}｜{e}")
+                continue
+
+        # 先找真正買賣超表
+        bs_candidates = {"買超": [], "賣超": []}
+        for url, context, df in all_tables:
+            for side in ["買超", "賣超"]:
+                score = 0
+                if side in context:
+                    score += 10
+                if "買賣超" in context:
+                    score += 10
+                if "權證" in context:
+                    score += 5
+                if "金額" in context:
+                    score += 5
+                if score <= 0:
+                    continue
+                y = parse_fubon_table(df, mode="bs", side_word=side)
+                if y is not None and not y.empty:
+                    bs_candidates[side].append((score, y))
+
+        if bs_candidates["買超"] or bs_candidates["賣超"]:
+            for side in ["買超", "賣超"]:
+                if not bs_candidates[side]:
+                    continue
+                bs_candidates[side].sort(key=lambda z: z[0], reverse=True)
+                y = bs_candidates[side][0][1]
+                for cp in ["認購", "認售"]:
+                    key = f"{cp}{side}"
+                    sub = y[y["認購認售"] == cp].head(10).copy()
+                    if not sub.empty:
+                        out[key] = sub[["名稱", "金額"]]
+            print("富邦權證備援：成功抓到買賣超表格。")
+            return mark_warrant_bs_source(out, "富邦備援")
+
+        # 若富邦沒有公開買賣超表，使用成交值排行榜當熱度備援
+        rank_candidates = []
+        for url, context, df in all_tables:
+            score = 0
+            if "成交值" in context or "成交金額" in context:
+                score += 10
+            if "權證" in context:
+                score += 5
+            if "排行榜" in context or "排行" in context:
+                score += 5
+            y = parse_fubon_table(df, mode="rank")
+            if y is not None and not y.empty:
+                rank_candidates.append((score, y))
+
+        if rank_candidates:
+            rank_candidates.sort(key=lambda z: z[0], reverse=True)
+            y = rank_candidates[0][1]
+            for cp in ["認購", "認售"]:
+                sub = y[y["認購認售"] == cp].head(10).copy()
+                if not sub.empty:
+                    # 富邦成交值排行不是買賣超；放在買超欄作為熱度備援，賣超欄留空避免誤判。
+                    out[f"{cp}買超"] = sub[["名稱", "金額"]]
+            print("富邦權證備援：未找到買賣超表，改用成交值排行榜熱度備援。")
+            return mark_warrant_bs_source(out, "富邦備援-成交值")
+
+        print("富邦權證備援：未抓到可用資料。")
+
+    except Exception as e:
+        print(f"富邦權證備援解析失敗：{e}")
+
+    return mark_warrant_bs_source(out, "富邦備援")
+
+
 def fetch_warrant_bs_top10():
     """
     權證盤後買賣超 TOP10 優化版。
     資料源優先序：
-    1) 永豐金權證網：較貼近權證市場統計，優先使用
-    2) HiStock：可抓認購 / 認售標的買賣超，當備援
+    1) 永豐金權證網：第一順位
+    2) 富邦權證財神網：備援來源
 
-    元大 / 富邦目前比較適合抓權證搜尋、成交量 / 成交值排行；
-    投資人買賣超金額排行這塊，永豐金頁面有明確分類，所以先放第一順位。
+    補充：富邦公開頁若沒有投資人買賣超金額表，程式會用成交值排行榜作熱度備援，
+    並在來源欄標成「富邦備援-成交值」，避免和永豐金買賣超混淆。
     """
     primary = fetch_sinotrade_warrant_bs_top10()
     need_fallback = any(primary.get(k) is None or primary.get(k).empty for k in primary.keys())
     if not need_fallback:
         return primary
 
-    fallback = mark_warrant_bs_source(fetch_histock_warrant_bs_top10(), "HiStock備援")
+    fallback = fetch_fubon_warrant_bs_top10()
     return merge_warrant_bs_sources(primary, fallback)
 
 
@@ -1508,7 +1763,7 @@ def build_report(df):
 
     if df.empty:
         report = "\n".join([
-            "📊 市場資金流雷達 v1.4",
+            "📊 市場資金流雷達 v1.5",
             status_text,
             f"📅 資料日：{actual_day}",
             f"🕒 最後更新：{now.strftime('%Y/%m/%d %H:%M')}",
@@ -1532,7 +1787,7 @@ def build_report(df):
     focus = pd.DataFrame()
 
     report_lines = []
-    report_lines.append("📊 市場資金流雷達 v1.4")
+    report_lines.append("📊 市場資金流雷達 v1.5")
     report_lines.append(status_text)
     if status_text.startswith("⚠️"):
         report_lines.append(f"預期資料日：{expected_day}")
