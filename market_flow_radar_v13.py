@@ -5,6 +5,7 @@
 # - 輸出成交量 Top 10、成交金額 Top 10、標的集中
 # - 寫入 Google Sheet
 # - 推播 Telegram
+# - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
 
 import io
 import os
@@ -154,10 +155,6 @@ def find_tables(obj):
 
 
 def fetch_twse_warrant_profile():
-    """
-    嘗試抓 TWSE 權證每日成交資料/基本資料 OpenAPI，用於補標的與認購認售。
-    若欄位格式不同，抓不到也不影響主報表。
-    """
     urls = [
         "https://openapi.twse.com.tw/v1/opendata/t187ap47_L",
     ]
@@ -207,10 +204,6 @@ def fetch_twse_warrant_profile():
 
 
 def fetch_twse_warrant_daily():
-    """
-    用 TWSE 每日收盤行情抓上市權證。
-    歷史查最近 10 天，找到最新有資料的交易日。
-    """
     today = now_taipei().date()
     profile = fetch_twse_warrant_profile()
 
@@ -225,7 +218,6 @@ def fetch_twse_warrant_daily():
             rows_out = []
 
             for t in tables:
-                title = str(t.get("title", ""))
                 fields = [str(x).strip() for x in t.get("fields", [])]
                 data = t.get("data", [])
 
@@ -286,14 +278,8 @@ def fetch_twse_warrant_daily():
 
 
 def fetch_tpex_warrant_daily():
-    """
-    嘗試抓 TPEx 上櫃權證。
-    TPEx 新舊 API 路徑偶爾會調整，所以這裡用多組 URL 嘗試。
-    抓不到時回傳空表，不影響上市權證報告。
-    """
     today = now_taipei().date()
 
-    # type=EW / 02 / warrant 等只是多路徑嘗試，抓到才使用
     url_templates = [
         "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyCloseQuotes?date={roc}&type=EW&response=json",
         "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyCloseQuotes?date={roc}&type=02&response=json",
@@ -314,7 +300,6 @@ def fetch_tpex_warrant_daily():
                 rows_out = []
 
                 for t in tables:
-                    title = str(t.get("title", ""))
                     fields = [str(x).strip() for x in t.get("fields", [])]
                     data = t.get("data", [])
 
@@ -442,7 +427,6 @@ def fmt_table(rows, cols):
     return "\n".join(lines)
 
 
-
 def is_tw_market_time():
     now = now_taipei()
     if now.weekday() >= 5:
@@ -460,10 +444,6 @@ def make_ex_ch(row):
 
 
 def fetch_mis_quotes(watch_df, max_symbols=80):
-    """
-    盤中近即時報價。
-    使用 TWSE MIS；只抓 watchlist 前 max_symbols 檔，避免全市場掃描過大。
-    """
     if watch_df is None or watch_df.empty:
         return pd.DataFrame()
 
@@ -553,7 +533,6 @@ def build_intraday_section(df):
         lines.append("盤中監控資料不足：盤後資料中未找到權證 watchlist。")
         return "\n".join(lines), pd.DataFrame()
 
-    # 追蹤昨日權證成交金額/成交量前段
     watch = warrant_df.sort_values(["成交金額", "成交量"], ascending=False).head(80)
     q = fetch_mis_quotes(watch, max_symbols=80)
 
@@ -586,7 +565,6 @@ def build_intraday_section(df):
         lines.append(f"{r.get('名稱')}：盤中成交量 {int(r.get('盤中成交量', 0)):,}，{tag}")
 
     return "\n".join(lines), q
-
 
 
 def non_warrant_df(df):
@@ -630,7 +608,6 @@ def append_otc_rank_section(lines, subdf):
     lines.extend(compact_rank_lines(amt_top, ["代碼", "名稱", "成交金額"], 10))
 
 
-
 def fmt_foreign_wan_lots(x):
     """外資買賣超以「萬張」顯示，小數點後 1 位。原始單位為股。"""
     try:
@@ -661,7 +638,6 @@ def find_foreign_net_field(fields):
 def parse_foreign_table(obj, market_name, data_day):
     rows_out = []
 
-    # 1) JSON 表格格式：fields + data
     tables = find_tables(obj)
     for t in tables:
         fields = [str(x).strip() for x in t.get("fields", [])]
@@ -692,7 +668,6 @@ def parse_foreign_table(obj, market_name, data_day):
                 "外資買賣超萬張": round(net / 10_000_000, 1),
             })
 
-    # 2) OpenAPI 常見格式：list[dict]
     dict_rows = obj if isinstance(obj, list) else []
     if dict_rows:
         for row in dict_rows:
@@ -722,8 +697,8 @@ def parse_foreign_table(obj, market_name, data_day):
         return pd.DataFrame()
     return pd.DataFrame(rows_out).drop_duplicates(subset=["市場", "代碼"])
 
+
 def fetch_twse_foreign_daily():
-    """TWSE 三大法人買賣超日報，取外資買賣超。"""
     today = now_taipei().date()
     url_templates = [
         "https://www.twse.com.tw/rwd/zh/fund/T86?date={ds}&selectType=ALLBUT0999&response=json",
@@ -743,8 +718,8 @@ def fetch_twse_foreign_daily():
                 continue
     return pd.DataFrame()
 
+
 def fetch_tpex_foreign_daily():
-    """TPEx 三大法人買賣超日報，盡量抓上櫃外資買賣超；抓不到不影響上市資料。"""
     today = now_taipei().date()
     url_templates = [
         "https://www.tpex.org.tw/www/zh-tw/threeInstitutional/daily?date={roc}&response=json",
@@ -766,6 +741,7 @@ def fetch_tpex_foreign_daily():
             except Exception:
                 continue
     return pd.DataFrame()
+
 
 def load_foreign_data():
     frames = []
@@ -796,7 +772,6 @@ def foreign_rank_lines(df, ascending=False):
         return ["資料不足"]
     lines = []
     for i, (_, r) in enumerate(x.iterrows(), start=1):
-        # 依需求只顯示：名稱 + 外資買賣超量（萬張）
         lines.append(f"{i}. {r.get('名稱')}｜{fmt_foreign_wan_lots(r.get('外資買賣超股數'))}")
     return lines
 
@@ -812,6 +787,185 @@ def append_foreign_section(lines, foreign_df):
     lines.append("")
     lines.append("📉 外資賣超 Top 15")
     lines.extend(foreign_rank_lines(foreign_df, ascending=True))
+
+
+# ============================================================
+# 權證買賣超 TOP10：新增區塊
+# ============================================================
+
+def fmt_warrant_top10_yi(x):
+    """權證買賣超金額，以億顯示，小數後 1 位。"""
+    try:
+        s = str(x).replace(",", "").replace("億", "").replace("萬", "").strip()
+        if s in ["", "-", "nan", "None"]:
+            return ""
+        v = float(s)
+
+        # 若來源本身已經是很小的億單位，例如 1.23，就直接當億
+        if abs(v) < 1000:
+            return f"{v:.1f}億"
+
+        # 若來源是元，就轉億
+        return f"{v / 100_000_000:.1f}億"
+    except Exception:
+        return str(x)
+
+
+def empty_warrant_bs_top10():
+    return {
+        "認購買超": pd.DataFrame(columns=["名稱", "金額"]),
+        "認購賣超": pd.DataFrame(columns=["名稱", "金額"]),
+        "認售買超": pd.DataFrame(columns=["名稱", "金額"]),
+        "認售賣超": pd.DataFrame(columns=["名稱", "金額"]),
+    }
+
+
+def fetch_warrant_bs_top10():
+    """
+    權證盤後買賣超 TOP10。
+    簡單版：
+    - 抓元大權證網市場統計頁面的表格
+    - 若抓不到，不影響主報表
+    - 回傳四組：認購買超 / 認購賣超 / 認售買超 / 認售賣超
+    """
+    out = empty_warrant_bs_top10()
+
+    url = "https://www.warrantwin.com.tw/eyuanta/Warrant/MarketStatistics.aspx"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.warrantwin.com.tw/eyuanta/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    try:
+        html = requests.get(url, headers=headers, timeout=30).text
+    except Exception as e:
+        print(f"權證買賣超 TOP10 抓取失敗：{e}")
+        return out
+
+    try:
+        tables = pd.read_html(io.StringIO(html))
+    except Exception as e:
+        print(f"權證買賣超 TOP10 表格解析失敗：{e}")
+        return out
+
+    def clean_name(v):
+        s = str(v).replace("\n", "").replace("\r", "").strip()
+        s = re.sub(r"\s+", "", s)
+        return s
+
+    def pick_table(keyword1, keyword2):
+        best = pd.DataFrame(columns=["名稱", "金額"])
+
+        for tb in tables:
+            if tb is None or tb.empty:
+                continue
+
+            x = tb.copy()
+            x = x.dropna(how="all")
+            if x.empty:
+                continue
+
+            text = " ".join([str(v) for v in x.astype(str).values.flatten()])
+            if keyword1 not in text or keyword2 not in text:
+                continue
+
+            x.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in x.columns]
+
+            name_col = None
+            amt_col = None
+
+            for c in x.columns:
+                cs = str(c)
+                if name_col is None and ("名稱" in cs or "權證" in cs):
+                    name_col = c
+                if amt_col is None and ("金額" in cs or "買超" in cs or "賣超" in cs):
+                    amt_col = c
+
+            if name_col is None:
+                name_col = x.columns[0]
+
+            if amt_col is None:
+                for c in reversed(x.columns):
+                    nums = pd.to_numeric(
+                        x[c].astype(str)
+                        .str.replace(",", "", regex=False)
+                        .str.replace("億", "", regex=False)
+                        .str.replace("萬", "", regex=False),
+                        errors="coerce"
+                    )
+                    if nums.notna().sum() >= 3:
+                        amt_col = c
+                        break
+
+            if amt_col is None:
+                continue
+
+            y = x[[name_col, amt_col]].copy()
+            y.columns = ["名稱", "金額"]
+
+            y["名稱"] = y["名稱"].apply(clean_name)
+            y = y[y["名稱"] != ""]
+            y = y[~y["名稱"].str.contains("名稱|權證名稱|買超|賣超|認購|認售", na=False)]
+
+            num = pd.to_numeric(
+                y["金額"].astype(str)
+                .str.replace(",", "", regex=False)
+                .str.replace("億", "", regex=False)
+                .str.replace("萬", "", regex=False),
+                errors="coerce"
+            )
+
+            y["金額_num"] = num
+            y = y.dropna(subset=["金額_num"])
+
+            if y.empty:
+                continue
+
+            y = y.sort_values("金額_num", ascending=False).head(10)
+            y["金額"] = y["金額"].apply(fmt_warrant_top10_yi)
+            best = y[["名稱", "金額"]].copy()
+            break
+
+        return best
+
+    out["認購買超"] = pick_table("認購", "買超")
+    out["認購賣超"] = pick_table("認購", "賣超")
+    out["認售買超"] = pick_table("認售", "買超")
+    out["認售賣超"] = pick_table("認售", "賣超")
+
+    return out
+
+
+def warrant_bs_rank_lines(df):
+    if df is None or df.empty:
+        return ["資料不足"]
+    lines = []
+    for i, (_, r) in enumerate(df.head(10).iterrows(), start=1):
+        name = str(r.get("名稱", "")).strip()
+        amt = str(r.get("金額", "")).strip()
+        lines.append(f"{i}. {name}｜{amt}")
+    return lines
+
+
+def append_warrant_bs_top10_section(lines, bs):
+    lines.append("🎯 權證買賣超 TOP10")
+    lines.append("")
+
+    lines.append("📈 認購買超 TOP10")
+    lines.extend(warrant_bs_rank_lines(bs.get("認購買超") if bs else pd.DataFrame()))
+    lines.append("")
+
+    lines.append("📉 認購賣超 TOP10")
+    lines.extend(warrant_bs_rank_lines(bs.get("認購賣超") if bs else pd.DataFrame()))
+    lines.append("")
+
+    lines.append("📈 認售買超 TOP10")
+    lines.extend(warrant_bs_rank_lines(bs.get("認售買超") if bs else pd.DataFrame()))
+    lines.append("")
+
+    lines.append("📉 認售賣超 TOP10")
+    lines.extend(warrant_bs_rank_lines(bs.get("認售賣超") if bs else pd.DataFrame()))
 
 
 def expected_market_data_day(now=None):
@@ -850,7 +1004,6 @@ def build_report(df):
 
     data_day = str(df["資料日"].iloc[0])
 
-    # 主要市場排行排除權證，避免干擾。
     stock_df = non_warrant_df(df)
     listed_df = market_subset(stock_df, "上市")
     otc_df = market_subset(stock_df, "上櫃")
@@ -858,7 +1011,6 @@ def build_report(df):
     market_vol_top = stock_df.sort_values("成交量", ascending=False).head(TOP_N) if not stock_df.empty else pd.DataFrame()
     market_amt_top = stock_df.sort_values("成交金額", ascending=False).head(TOP_N) if not stock_df.empty else pd.DataFrame()
 
-    # v1.1 權證熱點不再顯示，但保留空表輸出，避免 workflow artifact / Sheet 函式破壞。
     warrant_vol_top = pd.DataFrame()
     warrant_amt_top = pd.DataFrame()
     focus = pd.DataFrame()
@@ -882,18 +1034,35 @@ def build_report(df):
     report_lines.append("")
     report_lines.append("━━━━━━━━━━━━━━")
     report_lines.append("")
+
     append_otc_rank_section(report_lines, otc_df)
     report_lines.append("")
     report_lines.append("━━━━━━━━━━━━━━")
     report_lines.append("")
-    append_foreign_section(report_lines, foreign_df)
 
-    foreign_buy_top = (foreign_df[foreign_df["外資買賣超股數"] > 0]
-                       .sort_values("外資買賣超股數", ascending=False).head(FOREIGN_TOP_N)) if not foreign_df.empty else pd.DataFrame()
-    foreign_sell_top = (foreign_df[foreign_df["外資買賣超股數"] < 0]
-                        .sort_values("外資買賣超股數", ascending=True).head(FOREIGN_TOP_N)) if not foreign_df.empty else pd.DataFrame()
+    append_foreign_section(report_lines, foreign_df)
+    report_lines.append("")
+    report_lines.append("━━━━━━━━━━━━━━")
+    report_lines.append("")
+
+    # 新增：權證認購 / 認售買賣超 TOP10，放在報告最後面
+    warrant_bs_top10 = fetch_warrant_bs_top10()
+    append_warrant_bs_top10_section(report_lines, warrant_bs_top10)
+
+    foreign_buy_top = (
+        foreign_df[foreign_df["外資買賣超股數"] > 0]
+        .sort_values("外資買賣超股數", ascending=False)
+        .head(FOREIGN_TOP_N)
+    ) if not foreign_df.empty else pd.DataFrame()
+
+    foreign_sell_top = (
+        foreign_df[foreign_df["外資買賣超股數"] < 0]
+        .sort_values("外資買賣超股數", ascending=True)
+        .head(FOREIGN_TOP_N)
+    ) if not foreign_df.empty else pd.DataFrame()
 
     return "\n".join(report_lines), market_vol_top, market_amt_top, warrant_vol_top, warrant_amt_top, focus, foreign_buy_top, foreign_sell_top
+
 
 def get_gsheet_client():
     raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -942,16 +1111,17 @@ def write_sheet(report, df, market_vol_top, market_amt_top, warrant_vol_top, war
     write_df(get_or_create_ws(sh, "外資賣超Top15", rows=100, cols=20), foreign_sell_top)
     write_df(get_or_create_ws(sh, "市場原始資料", rows=5000, cols=20), df)
 
-    # 歷史簡表
     ws_hist = get_or_create_ws(sh, "市場權證歷史紀錄", rows=1000, cols=20)
     if not ws_hist.get_all_values():
         ws_hist.append_row(["寫入時間", "資料日", "成交量集中", "成交金額集中", "今日總結"])
+
     data_day = str(df["資料日"].iloc[0]) if df is not None and not df.empty else now_taipei().strftime("%Y%m%d")
     summary_line = ""
     for line in report.splitlines():
         if line.startswith("市場資料："):
             summary_line = line
             break
+
     ws_hist.append_row([
         now_taipei().strftime("%Y-%m-%d %H:%M:%S"),
         data_day,
@@ -959,6 +1129,7 @@ def write_sheet(report, df, market_vol_top, market_amt_top, warrant_vol_top, war
         top_underlyings(market_amt_top, "成交金額") if market_amt_top is not None and not market_amt_top.empty else "-",
         summary_line,
     ])
+
     print(f"已寫入 Google Sheet。Service account：{email}")
 
 
@@ -993,6 +1164,7 @@ def main():
     report, market_vol_top, market_amt_top, warrant_vol_top, warrant_amt_top, focus, foreign_buy_top, foreign_sell_top = build_report(df)
 
     print(report)
+
     df.to_csv("market_flow_raw_v13.csv", index=False, encoding="utf-8-sig")
     market_vol_top.to_csv("market_volume_top10_v13.csv", index=False, encoding="utf-8-sig")
     market_amt_top.to_csv("market_amount_top10_v13.csv", index=False, encoding="utf-8-sig")
