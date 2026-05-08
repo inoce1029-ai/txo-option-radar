@@ -2,13 +2,18 @@ name: US Market Afterhours Radar Daily
 
 on:
   schedule:
-    # 07:00 Taiwan time Tue-Sat = 23:00 UTC Mon-Fri
-    - cron: "0 23 * * 1-5"
+    # 台灣時間 週二～週六 07:07
+    # GitHub Actions cron 使用 UTC
+    # Taiwan UTC+8，所以 07:07 台灣時間 = 前一天 23:07 UTC
+    # 台灣週二～週六早上 = UTC 週一～週五晚上
+    - cron: "7 23 * * 1-5"
+
   workflow_dispatch:
 
 jobs:
   run-us-market-radar:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,7 +24,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run US market afterhours radar and send Telegram
         env:
@@ -29,6 +36,7 @@ jobs:
           python us_market_afterhours_radar_v06.py | tee us_market_afterhours_report.txt
 
       - name: Upload backup report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: us-market-afterhours-radar-report
@@ -37,3 +45,4 @@ jobs:
             us_strong_top10_v06.csv
             us_weak_top10_v06.csv
             us_inflow_sector_top10_v06.csv
+          if-no-files-found: ignore
