@@ -2,11 +2,11 @@ name: Market Warrant Flow Radar Daily
 
 on:
   schedule:
-    # 台灣時間 週一～週五 18:07
+    # 台灣時間 週一～週五 21:17
     # GitHub Actions cron 使用 UTC
-    # Taiwan UTC+8，所以 18:07 台灣時間 = 10:07 UTC
-    # 避開整點 18:00，降低 GitHub Actions 排程延遲或漏跑機率
-    - cron: "7 10 * * 1-5"
+    # Taiwan UTC+8，所以 21:17 台灣時間 = 13:17 UTC
+    # 統一等法人 / 籌碼 / 權證資料更新後再推播
+    - cron: "17 13 * * 1-5"
 
   workflow_dispatch:
 
