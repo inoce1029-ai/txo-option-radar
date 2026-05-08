@@ -2,8 +2,12 @@ name: Market Warrant Flow Radar Daily
 
 on:
   schedule:
-    # 18:00 Taiwan time = 10:00 UTC
-    - cron: "0 10 * * 1-5"
+    # 台灣時間 週一～週五 18:07
+    # GitHub Actions cron 使用 UTC
+    # Taiwan UTC+8，所以 18:07 台灣時間 = 10:07 UTC
+    # 避開整點 18:00，降低 GitHub Actions 排程延遲或漏跑機率
+    - cron: "7 10 * * 1-5"
+
   workflow_dispatch:
 
 jobs:
@@ -20,7 +24,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run market flow radar
         env:
@@ -33,6 +39,7 @@ jobs:
           python market_flow_radar_v13.py | tee market_flow_report.txt
 
       - name: Upload backup report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: market-flow-radar-report
@@ -43,3 +50,4 @@ jobs:
             market_amount_top10_v13.csv
             foreign_buy_top15_v13.csv
             foreign_sell_top15_v13.csv
+          if-no-files-found: ignore
