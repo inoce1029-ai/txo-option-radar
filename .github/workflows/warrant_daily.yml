@@ -1,17 +1,17 @@
-name: Market Warrant Flow Radar Daily
+name: Market Flow Radar Daily
 
 on:
   schedule:
     # 台灣時間 週一～週五 08:07
     # GitHub Actions cron 使用 UTC
     # Taiwan UTC+8，所以 08:07 台灣時間 = 00:07 UTC
-    # 統一等法人 / 籌碼 / 權證資料更新後再推播
+    # 法人 / 籌碼資料更新後推播
     - cron: "7 0 * * 1-5"
 
   workflow_dispatch:
 
 jobs:
-  run-market-warrant-radar:
+  run-market-flow-radar:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,8 +27,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install playwright
-          python -m playwright install chromium
 
       - name: Run market flow radar
         env:
@@ -38,7 +36,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python market_warrant_flow_radar_v17_dynamic_sources.py | tee market_flow_report.txt
+          python market_flow_radar_v18_no_warrant.py | tee market_flow_report.txt
 
       - name: Upload backup report artifact
         if: always()
