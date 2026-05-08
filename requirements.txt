@@ -3,3 +3,7 @@ requests
 gspread
 google-auth
 yfinance
+playwright
+beautifulsoup4
+lxml
+html5lib
