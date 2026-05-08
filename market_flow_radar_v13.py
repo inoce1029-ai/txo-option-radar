@@ -6,7 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
-# - 權證買賣超 TOP10 改用 Playwright 模擬瀏覽器抓動態頁面
+# - 權證買賣超 TOP10 改抓 HiStock 投資人權證買賣超排名
 
 import io
 import os
@@ -795,7 +795,7 @@ def append_foreign_section(lines, foreign_df):
 
 
 # ============================================================
-# 權證買賣超 TOP10：Playwright 動態抓取版
+# 權證買賣超 TOP10：HiStock 抓取版
 # ============================================================
 
 def empty_warrant_bs_top10():
@@ -810,37 +810,38 @@ def empty_warrant_bs_top10():
 def fetch_warrant_bs_top10():
     """
     權證盤後買賣超 TOP10。
-    使用 Playwright 打開元大權證市場統計頁，模擬瀏覽器抓取動態表格。
-    回傳四組：
-    1. 認購買超
-    2. 認購賣超
-    3. 認售買超
-    4. 認售賣超
+    改抓 HiStock 投資人權證買賣超排名：
+    - 認購買超
+    - 認購賣超
+    - 認售買超
+    - 認售賣超
+
+    輸出：名稱、金額，金額以億顯示，小數後 1 位。
     """
     out = empty_warrant_bs_top10()
 
-    url = "https://www.warrantwin.com.tw/eyuanta/Warrant/MarketStatistics.aspx"
+    url = "https://histock.tw/stock/warrantstats.aspx"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://histock.tw/",
+    }
 
     def flatten_columns(df):
         x = df.copy()
-        new_cols = []
+        cols = []
         for c in x.columns:
             if isinstance(c, tuple):
-                new_cols.append("".join([str(v) for v in c if str(v) != "nan"]).replace("\n", "").replace(" ", ""))
+                cols.append("".join([str(v) for v in c if str(v) != "nan"]).replace("\n", "").replace(" ", ""))
             else:
-                new_cols.append(str(c).replace("\n", "").replace(" ", ""))
-        x.columns = new_cols
+                cols.append(str(c).replace("\n", "").replace(" ", ""))
+        x.columns = cols
         return x
 
-    def clean_name(v):
-        s = str(v).replace("\n", "").replace("\r", "").strip()
-        s = re.sub(r"\s+", "", s)
-        return s
-
-    def parse_amount_to_yi(v, col_name=""):
+    def fmt_amount_yi(v):
         """
-        來源常見單位可能是千元 / 元 / 億。
-        最後統一顯示：億，小數後 1 位。
+        HiStock 欄位通常是「買賣超金額」，原始以元呈現。
+        統一轉成：億，小數後 1 位。
         """
         try:
             s = (
@@ -853,31 +854,45 @@ def fetch_warrant_bs_top10():
                 .strip()
             )
             if s in ["", "-", "--", "nan", "None"]:
-                return None
+                return ""
 
             num = float(s)
 
-            if "千" in str(col_name):
-                yi = abs(num) / 100000
-            elif abs(num) >= 100000000:
-                yi = abs(num) / 100000000
-            elif abs(num) >= 10000:
-                yi = abs(num) / 10000 / 10000
+            # 若來源已經是小數億，就直接用；否則用元轉億
+            if abs(num) < 1000:
+                yi = num
             else:
-                # 如果來源本來就是億單位
-                yi = abs(num)
+                yi = num / 100_000_000
 
             return f"{yi:.1f}億"
         except Exception:
-            return None
+            return ""
 
-    def extract_top10_from_html(html, mode_text):
-        try:
-            tables = pd.read_html(io.StringIO(html))
-        except Exception:
-            return pd.DataFrame(columns=["名稱", "金額"])
+    def clean_name(v):
+        s = str(v).replace("\n", "").replace("\r", "").strip()
+        s = re.sub(r"\s+", "", s)
+        return s
 
-        best = pd.DataFrame(columns=["名稱", "金額"])
+    def score_table(text, cp_word, side_word):
+        score = 0
+        if cp_word in text:
+            score += 5
+        if side_word in text:
+            score += 5
+        if "買賣超金額" in text or "金額" in text:
+            score += 2
+        if "股票" in text or "名稱" in text:
+            score += 1
+        return score
+
+    def pick_by_keywords(tables, cp_word, side_word):
+        """
+        從所有表格中找出最符合：
+        cp_word = 認購 / 認售
+        side_word = 買超 / 賣超
+        的表格。
+        """
+        candidates = []
 
         for tb in tables:
             if tb is None or tb.empty:
@@ -885,8 +900,10 @@ def fetch_warrant_bs_top10():
 
             x = flatten_columns(tb)
             text = " ".join([str(v) for v in x.astype(str).values.flatten()])
+            col_text = " ".join([str(c) for c in x.columns])
+            all_text = col_text + " " + text
 
-            if not any(k in text for k in ["權證名稱", "權證代碼", "投資人", "買超", "賣超"]):
+            if cp_word not in all_text or side_word not in all_text:
                 continue
 
             name_col = None
@@ -894,29 +911,32 @@ def fetch_warrant_bs_top10():
 
             for c in x.columns:
                 cs = str(c)
-                if name_col is None and ("權證名稱" in cs or "名稱" in cs):
+                if name_col is None and ("股票" in cs or "名稱" in cs or "標的" in cs):
                     name_col = c
+                if amt_col is None and ("買賣超金額" in cs or "金額" in cs):
+                    amt_col = c
 
+            # pandas 有時候會把欄位讀成 Unnamed，改用位置判斷
             if name_col is None:
                 for c in x.columns:
-                    cs = str(c)
-                    if "標的" in cs:
-                        name_col = c
-                        break
-
-            for c in x.columns:
-                cs = str(c)
-                if "買超" in mode_text and ("買超" in cs or "投資人買超" in cs):
-                    amt_col = c
-                    break
-                if "賣超" in mode_text and ("賣超" in cs or "投資人賣超" in cs):
-                    amt_col = c
-                    break
+                    vals = x[c].astype(str).head(15).tolist()
+                    joined = " ".join(vals)
+                    if not any(k in joined for k in ["買超", "賣超", "金額", "張數", "排名"]):
+                        # 名稱欄通常是中文股票名
+                        if any(re.search(r"[\u4e00-\u9fff]", v) for v in vals):
+                            name_col = c
+                            break
 
             if amt_col is None:
-                for c in x.columns:
-                    cs = str(c)
-                    if "投資人" in cs and ("千" in cs or "金額" in cs):
+                for c in reversed(x.columns):
+                    nums = pd.to_numeric(
+                        x[c].astype(str)
+                        .str.replace(",", "", regex=False)
+                        .str.replace("+", "", regex=False)
+                        .str.replace("−", "-", regex=False),
+                        errors="coerce"
+                    )
+                    if nums.notna().sum() >= 3:
                         amt_col = c
                         break
 
@@ -927,59 +947,60 @@ def fetch_warrant_bs_top10():
             y.columns = ["名稱", "原始金額"]
 
             y["名稱"] = y["名稱"].apply(clean_name)
+            y["金額_num"] = pd.to_numeric(
+                y["原始金額"].astype(str)
+                .str.replace(",", "", regex=False)
+                .str.replace("+", "", regex=False)
+                .str.replace("−", "-", regex=False),
+                errors="coerce"
+            )
+
+            y = y.dropna(subset=["金額_num"])
             y = y[
                 (y["名稱"] != "") &
-                (~y["名稱"].str.contains("名稱|權證名稱|標的|nan|---", na=False))
+                (~y["名稱"].str.contains("股票|名稱|標的|排名|nan|None|買超|賣超", na=False))
             ]
 
-            y["金額"] = y["原始金額"].apply(lambda v: parse_amount_to_yi(v, amt_col))
-            y = y.dropna(subset=["金額"])
+            if y.empty:
+                continue
 
-            if not y.empty:
-                best = y[["名稱", "金額"]].head(10).copy()
-                break
+            # 賣超通常為負值，從最負排序；若來源賣超用正值，則由大到小
+            if side_word == "賣超":
+                if (y["金額_num"] < 0).any():
+                    y = y.sort_values("金額_num", ascending=True)
+                else:
+                    y = y.sort_values("金額_num", ascending=False)
+            else:
+                y = y.sort_values("金額_num", ascending=False)
 
-        return best
+            y = y.head(10).copy()
+            y["金額"] = y["金額_num"].apply(fmt_amount_yi)
+
+            candidates.append((score_table(all_text, cp_word, side_word), y[["名稱", "金額"]]))
+
+        if not candidates:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        candidates.sort(key=lambda z: z[0], reverse=True)
+        return candidates[0][1]
 
     try:
-        from playwright.sync_api import sync_playwright
+        r = requests.get(url, headers=headers, timeout=30)
+        r.raise_for_status()
+        html = r.text
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = browser.new_page(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-            )
+        tables = pd.read_html(io.StringIO(html))
 
-            page.goto(url, wait_until="networkidle", timeout=60000)
-            page.wait_for_timeout(3000)
-
-            targets = {
-                "認購買超": "認購市場買超",
-                "認購賣超": "認購市場賣超",
-                "認售買超": "認售市場買超",
-                "認售賣超": "認售市場賣超",
-            }
-
-            for key, label in targets.items():
-                try:
-                    page.get_by_text(label, exact=True).click(timeout=5000)
-                    page.wait_for_timeout(2000)
-                except Exception:
-                    # 有些頁面可能預設已載入全部 tab，點不到也繼續解析
-                    pass
-
-                html = page.content()
-                out[key] = extract_top10_from_html(html, label)
-
-            browser.close()
+        out["認購買超"] = pick_by_keywords(tables, "認購", "買超")
+        out["認購賣超"] = pick_by_keywords(tables, "認購", "賣超")
+        out["認售買超"] = pick_by_keywords(tables, "認售", "買超")
+        out["認售賣超"] = pick_by_keywords(tables, "認售", "賣超")
 
     except Exception as e:
-        print(f"權證買賣超 TOP10 Playwright 抓取失敗：{e}")
+        print(f"HiStock 權證買賣超 TOP10 抓取失敗：{e}")
 
     return out
+
 
 
 def warrant_bs_rank_lines(df):
