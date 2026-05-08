@@ -6,7 +6,7 @@ on:
     # GitHub Actions cron 使用 UTC
     # Taiwan UTC+8，所以 21:17 台灣時間 = 13:17 UTC
     # 統一等法人 / 籌碼 / 權證資料更新後再推播
-    - cron: "17 13 * * 1-5"
+    - cron: "45 11 * * 1-5"
 
   workflow_dispatch:
 
