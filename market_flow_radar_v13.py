@@ -817,7 +817,7 @@ def fetch_warrant_bs_top10():
     2. 自動尋找頁面上「認購/認售 + 買超/賣超」的分類連結
     3. 有分類連結就分別打開分類頁
     4. 找不到分類連結時，回到主頁所有表格中用欄位與金額型態判斷
-    5. 最後輸出：名稱｜金額，金額以億顯示，小數後 1 位
+    5. 最後輸出：名稱｜金額，金額以萬顯示，小數後 1 位
     """
     out = empty_warrant_bs_top10()
 
@@ -894,16 +894,16 @@ def fetch_warrant_bs_top10():
             return None
 
     def fmt_amount_yi(v):
-    """
-    HiStock 買賣超金額改用「萬」顯示，小數後 1 位。
-    來源通常是元。
-    """
-    try:
-        num = float(v)
-        wan = num / 10_000
-        return f"{wan:.1f}萬"
-    except Exception:
-        return ""
+        """
+        HiStock 買賣超金額改用「萬」顯示，小數後 1 位。
+        來源通常是元。
+        """
+        try:
+            num = float(v)
+            wan = num / 10_000
+            return f"{wan:.1f}萬"
+        except Exception:
+            return ""
 
     def clean_name(v):
         s = str(v).replace("\n", "").replace("\r", "").strip()
