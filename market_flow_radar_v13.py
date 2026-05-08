@@ -6,6 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
+# - 權證買賣超 TOP10 改用 Playwright 模擬瀏覽器抓動態頁面
 
 import io
 import os
@@ -444,6 +445,10 @@ def make_ex_ch(row):
 
 
 def fetch_mis_quotes(watch_df, max_symbols=80):
+    """
+    盤中近即時報價。
+    使用 TWSE MIS；只抓 watchlist 前 max_symbols 檔，避免全市場掃描過大。
+    """
     if watch_df is None or watch_df.empty:
         return pd.DataFrame()
 
@@ -790,26 +795,8 @@ def append_foreign_section(lines, foreign_df):
 
 
 # ============================================================
-# 權證買賣超 TOP10：新增區塊
+# 權證買賣超 TOP10：Playwright 動態抓取版
 # ============================================================
-
-def fmt_warrant_top10_yi(x):
-    """權證買賣超金額，以億顯示，小數後 1 位。"""
-    try:
-        s = str(x).replace(",", "").replace("億", "").replace("萬", "").strip()
-        if s in ["", "-", "nan", "None"]:
-            return ""
-        v = float(s)
-
-        # 若來源本身已經是很小的億單位，例如 1.23，就直接當億
-        if abs(v) < 1000:
-            return f"{v:.1f}億"
-
-        # 若來源是元，就轉億
-        return f"{v / 100_000_000:.1f}億"
-    except Exception:
-        return str(x)
-
 
 def empty_warrant_bs_top10():
     return {
@@ -823,116 +810,174 @@ def empty_warrant_bs_top10():
 def fetch_warrant_bs_top10():
     """
     權證盤後買賣超 TOP10。
-    簡單版：
-    - 抓元大權證網市場統計頁面的表格
-    - 若抓不到，不影響主報表
-    - 回傳四組：認購買超 / 認購賣超 / 認售買超 / 認售賣超
+    使用 Playwright 打開元大權證市場統計頁，模擬瀏覽器抓取動態表格。
+    回傳四組：
+    1. 認購買超
+    2. 認購賣超
+    3. 認售買超
+    4. 認售賣超
     """
     out = empty_warrant_bs_top10()
 
     url = "https://www.warrantwin.com.tw/eyuanta/Warrant/MarketStatistics.aspx"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.warrantwin.com.tw/eyuanta/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
 
-    try:
-        html = requests.get(url, headers=headers, timeout=30).text
-    except Exception as e:
-        print(f"權證買賣超 TOP10 抓取失敗：{e}")
-        return out
-
-    try:
-        tables = pd.read_html(io.StringIO(html))
-    except Exception as e:
-        print(f"權證買賣超 TOP10 表格解析失敗：{e}")
-        return out
+    def flatten_columns(df):
+        x = df.copy()
+        new_cols = []
+        for c in x.columns:
+            if isinstance(c, tuple):
+                new_cols.append("".join([str(v) for v in c if str(v) != "nan"]).replace("\n", "").replace(" ", ""))
+            else:
+                new_cols.append(str(c).replace("\n", "").replace(" ", ""))
+        x.columns = new_cols
+        return x
 
     def clean_name(v):
         s = str(v).replace("\n", "").replace("\r", "").strip()
         s = re.sub(r"\s+", "", s)
         return s
 
-    def pick_table(keyword1, keyword2):
+    def parse_amount_to_yi(v, col_name=""):
+        """
+        來源常見單位可能是千元 / 元 / 億。
+        最後統一顯示：億，小數後 1 位。
+        """
+        try:
+            s = (
+                str(v)
+                .replace(",", "")
+                .replace("+", "")
+                .replace("−", "-")
+                .replace("億", "")
+                .replace("萬", "")
+                .strip()
+            )
+            if s in ["", "-", "--", "nan", "None"]:
+                return None
+
+            num = float(s)
+
+            if "千" in str(col_name):
+                yi = abs(num) / 100000
+            elif abs(num) >= 100000000:
+                yi = abs(num) / 100000000
+            elif abs(num) >= 10000:
+                yi = abs(num) / 10000 / 10000
+            else:
+                # 如果來源本來就是億單位
+                yi = abs(num)
+
+            return f"{yi:.1f}億"
+        except Exception:
+            return None
+
+    def extract_top10_from_html(html, mode_text):
+        try:
+            tables = pd.read_html(io.StringIO(html))
+        except Exception:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
         best = pd.DataFrame(columns=["名稱", "金額"])
 
         for tb in tables:
             if tb is None or tb.empty:
                 continue
 
-            x = tb.copy()
-            x = x.dropna(how="all")
-            if x.empty:
-                continue
-
+            x = flatten_columns(tb)
             text = " ".join([str(v) for v in x.astype(str).values.flatten()])
-            if keyword1 not in text or keyword2 not in text:
-                continue
 
-            x.columns = [str(c).replace("\n", "").replace(" ", "").strip() for c in x.columns]
+            if not any(k in text for k in ["權證名稱", "權證代碼", "投資人", "買超", "賣超"]):
+                continue
 
             name_col = None
             amt_col = None
 
             for c in x.columns:
                 cs = str(c)
-                if name_col is None and ("名稱" in cs or "權證" in cs):
+                if name_col is None and ("權證名稱" in cs or "名稱" in cs):
                     name_col = c
-                if amt_col is None and ("金額" in cs or "買超" in cs or "賣超" in cs):
-                    amt_col = c
 
             if name_col is None:
-                name_col = x.columns[0]
+                for c in x.columns:
+                    cs = str(c)
+                    if "標的" in cs:
+                        name_col = c
+                        break
+
+            for c in x.columns:
+                cs = str(c)
+                if "買超" in mode_text and ("買超" in cs or "投資人買超" in cs):
+                    amt_col = c
+                    break
+                if "賣超" in mode_text and ("賣超" in cs or "投資人賣超" in cs):
+                    amt_col = c
+                    break
 
             if amt_col is None:
-                for c in reversed(x.columns):
-                    nums = pd.to_numeric(
-                        x[c].astype(str)
-                        .str.replace(",", "", regex=False)
-                        .str.replace("億", "", regex=False)
-                        .str.replace("萬", "", regex=False),
-                        errors="coerce"
-                    )
-                    if nums.notna().sum() >= 3:
+                for c in x.columns:
+                    cs = str(c)
+                    if "投資人" in cs and ("千" in cs or "金額" in cs):
                         amt_col = c
                         break
 
-            if amt_col is None:
+            if name_col is None or amt_col is None:
                 continue
 
             y = x[[name_col, amt_col]].copy()
-            y.columns = ["名稱", "金額"]
+            y.columns = ["名稱", "原始金額"]
 
             y["名稱"] = y["名稱"].apply(clean_name)
-            y = y[y["名稱"] != ""]
-            y = y[~y["名稱"].str.contains("名稱|權證名稱|買超|賣超|認購|認售", na=False)]
+            y = y[
+                (y["名稱"] != "") &
+                (~y["名稱"].str.contains("名稱|權證名稱|標的|nan|---", na=False))
+            ]
 
-            num = pd.to_numeric(
-                y["金額"].astype(str)
-                .str.replace(",", "", regex=False)
-                .str.replace("億", "", regex=False)
-                .str.replace("萬", "", regex=False),
-                errors="coerce"
-            )
+            y["金額"] = y["原始金額"].apply(lambda v: parse_amount_to_yi(v, amt_col))
+            y = y.dropna(subset=["金額"])
 
-            y["金額_num"] = num
-            y = y.dropna(subset=["金額_num"])
-
-            if y.empty:
-                continue
-
-            y = y.sort_values("金額_num", ascending=False).head(10)
-            y["金額"] = y["金額"].apply(fmt_warrant_top10_yi)
-            best = y[["名稱", "金額"]].copy()
-            break
+            if not y.empty:
+                best = y[["名稱", "金額"]].head(10).copy()
+                break
 
         return best
 
-    out["認購買超"] = pick_table("認購", "買超")
-    out["認購賣超"] = pick_table("認購", "賣超")
-    out["認售買超"] = pick_table("認售", "買超")
-    out["認售賣超"] = pick_table("認售", "賣超")
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
+            page = browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+            )
+
+            page.goto(url, wait_until="networkidle", timeout=60000)
+            page.wait_for_timeout(3000)
+
+            targets = {
+                "認購買超": "認購市場買超",
+                "認購賣超": "認購市場賣超",
+                "認售買超": "認售市場買超",
+                "認售賣超": "認售市場賣超",
+            }
+
+            for key, label in targets.items():
+                try:
+                    page.get_by_text(label, exact=True).click(timeout=5000)
+                    page.wait_for_timeout(2000)
+                except Exception:
+                    # 有些頁面可能預設已載入全部 tab，點不到也繼續解析
+                    pass
+
+                html = page.content()
+                out[key] = extract_top10_from_html(html, label)
+
+            browser.close()
+
+    except Exception as e:
+        print(f"權證買賣超 TOP10 Playwright 抓取失敗：{e}")
 
     return out
 
