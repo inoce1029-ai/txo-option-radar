@@ -1,4 +1,4 @@
-# 市場資金流雷達 v1.3
+# 市場資金流雷達 v1.4
 # 功能：
 # - 抓上市權證每日收盤行情（TWSE 官方資料）
 # - 盡量抓上櫃權證每日收盤行情（TPEx 官方資料，若抓不到會保留上市資料）
@@ -6,7 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
-# - 權證買賣超 TOP10 改抓 HiStock 投資人權證買賣超排名，並加入多層 fallback
+# - 權證買賣超 TOP10：永豐金權證網優先，HiStock 備援，並標示來源
 
 import io
 import os
@@ -807,10 +807,267 @@ def empty_warrant_bs_top10():
     }
 
 
+
+def mark_warrant_bs_source(bs, source_name):
+    """替四個權證買賣超表補來源欄位，方便 Telegram / Sheet 檢查資料從哪裡來。"""
+    if not bs:
+        return bs
+    out = {}
+    for k, df in bs.items():
+        if df is None or df.empty:
+            out[k] = df
+            continue
+        x = df.copy()
+        x["來源"] = source_name
+        out[k] = x
+    return out
+
+
+def fetch_sinotrade_warrant_bs_top10():
+    """
+    權證盤後買賣超 TOP10：永豐金權證網優先來源。
+
+    永豐金權證網的市場統計頁有「投資人買超權證_金額排行 / 投資人賣超權證_金額排行」。
+    這裡用通用解析，不硬綁表格 id：
+    1) 讀取 marketW.jsp
+    2) 從所有 HTML table 找出買超 / 賣超、金額欄、名稱欄
+    3) 用權證名稱自動判斷認購 / 認售
+    4) 輸出四類：認購買超、認購賣超、認售買超、認售賣超
+    5) 若頁面改成 JS 動態載入而抓不到，回傳空表讓 HiStock 備援接手
+    """
+    out = empty_warrant_bs_top10()
+    url = "https://warrant.sinotrade.com.tw/j/marketW.jsp"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://warrant.sinotrade.com.tw/",
+        "Connection": "keep-alive",
+    }
+
+    def flatten_columns(df):
+        x = df.copy()
+        cols = []
+        for c in x.columns:
+            if isinstance(c, tuple):
+                cols.append("".join([str(v) for v in c if str(v) != "nan"]).replace("\n", "").replace(" ", ""))
+            else:
+                cols.append(str(c).replace("\n", "").replace(" ", ""))
+        x.columns = cols
+        return x
+
+    def parse_amount_to_yuan(v):
+        try:
+            s = str(v).replace(",", "").replace("+", "").replace("−", "-").strip()
+            if s in ["", "-", "--", "nan", "None"]:
+                return None
+            unit = 1
+            if "億" in s:
+                unit = 100_000_000
+            elif "萬" in s:
+                unit = 10_000
+            s = s.replace("億", "").replace("萬", "")
+            return float(s) * unit
+        except Exception:
+            return None
+
+    def fmt_amount_wan(v):
+        try:
+            return f"{float(v) / 10_000:.1f}萬"
+        except Exception:
+            return ""
+
+    def clean_name(v):
+        s = str(v).replace("\n", "").replace("\r", "").strip()
+        s = re.sub(r"\s+", "", s)
+        return s
+
+    def pick_col(cols, keywords, exclude=None):
+        exclude = exclude or []
+        for c in cols:
+            cs = str(c)
+            if any(k in cs for k in keywords) and not any(x in cs for x in exclude):
+                return c
+        return None
+
+    def parse_candidate_table(df, side_word):
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+        x = flatten_columns(df).dropna(how="all").copy()
+        if x.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        cols = list(x.columns)
+        name_col = pick_col(cols, ["權證名稱", "名稱", "商品", "股票"], exclude=["標的"])
+        amt_col = pick_col(cols, ["買賣超金額", "金額"], exclude=["成交"])
+
+        # 若欄名不標準，就用內容特徵補抓
+        if name_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ["代號", "排名", "金額", "張數", "比例", "%"]):
+                    continue
+                vals = x[c].astype(str).head(50).tolist()
+                score = sum(1 for v in vals if any(k in v for k in ["購", "售", "牛", "熊"]))
+                if score > best_score:
+                    best_col, best_score = c, score
+            if best_score >= 3:
+                name_col = best_col
+
+        if amt_col is None:
+            best_col, best_score = None, -1
+            for c in cols:
+                cs = str(c)
+                if any(k in cs for k in ["代號", "排名", "張數", "比例", "%", "流通"]):
+                    continue
+                nums = x[c].apply(parse_amount_to_yuan).dropna()
+                if len(nums) < 3:
+                    continue
+                score = len(nums) + min(nums.abs().median() / 1_000_000, 50)
+                if score > best_score:
+                    best_col, best_score = c, score
+            amt_col = best_col
+
+        if name_col is None or amt_col is None:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        y = x[[name_col, amt_col]].copy()
+        y.columns = ["名稱", "原始金額"]
+        y["名稱"] = y["名稱"].apply(clean_name)
+        y["金額_num"] = y["原始金額"].apply(parse_amount_to_yuan)
+        y = y.dropna(subset=["金額_num"])
+        y = y[y["名稱"].apply(is_warrant_name)]
+        y = y[~y["名稱"].astype(str).str.fullmatch(r"\d{4,6}", na=False)]
+        if y.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        if side_word == "賣超":
+            y = y.sort_values("金額_num", ascending=True if (y["金額_num"] < 0).any() else False)
+        else:
+            y = y.sort_values("金額_num", ascending=False)
+
+        y = y.head(30).copy()
+        y["認購認售"] = y["名稱"].apply(infer_cp_type)
+        y["金額"] = y["金額_num"].apply(fmt_amount_wan)
+        return y[["名稱", "認購認售", "金額", "金額_num"]]
+
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        r.raise_for_status()
+        if not r.encoding or r.encoding.lower() == "iso-8859-1":
+            r.encoding = r.apparent_encoding
+        html = r.text
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        tables = soup.find_all("table")
+
+        # 把每個表格前後文一起評分，優先抓「投資人買超/賣超 + 金額排行」
+        candidates = {"買超": [], "賣超": []}
+        for tb in tables:
+            context_parts = [tb.get_text(" ", strip=True)]
+            p = tb.parent
+            for _ in range(3):
+                if p is None:
+                    break
+                context_parts.append(p.get_text(" ", strip=True)[:2000])
+                p = p.parent
+            prev = tb.find_previous()
+            for _ in range(8):
+                if prev is None:
+                    break
+                try:
+                    context_parts.append(prev.get_text(" ", strip=True)[:600])
+                except Exception:
+                    pass
+                prev = prev.find_previous()
+            context = " ".join(context_parts)
+
+            try:
+                arr = pd.read_html(io.StringIO(str(tb)))
+            except Exception:
+                arr = []
+            if not arr:
+                continue
+
+            for side in ["買超", "賣超"]:
+                score = 0
+                if "投資人" in context:
+                    score += 5
+                if side in context:
+                    score += 10
+                if "權證" in context:
+                    score += 5
+                if "金額" in context:
+                    score += 5
+                if "張數" in context and "金額" not in context:
+                    score -= 5
+                if score <= 0:
+                    continue
+                y = parse_candidate_table(arr[0], side)
+                if y is not None and not y.empty:
+                    candidates[side].append((score, y))
+
+        for side in ["買超", "賣超"]:
+            if not candidates[side]:
+                continue
+            candidates[side].sort(key=lambda z: z[0], reverse=True)
+            y = candidates[side][0][1]
+            for cp in ["認購", "認售"]:
+                key = f"{cp}{side}"
+                sub = y[y["認購認售"] == cp].head(10).copy()
+                out[key] = sub[["名稱", "金額"]] if not sub.empty else out[key]
+
+        hit_count = sum(0 if v is None or v.empty else len(v) for v in out.values())
+        if hit_count:
+            print(f"永豐金權證買賣超：成功抓到 {hit_count} 筆。")
+        else:
+            print("永豐金權證買賣超：未抓到可用資料，改用 HiStock 備援。")
+
+    except Exception as e:
+        print(f"永豐金權證買賣超抓取失敗，改用 HiStock 備援：{e}")
+
+    return mark_warrant_bs_source(out, "永豐金")
+
+
+def merge_warrant_bs_sources(primary, fallback):
+    """四個分類逐項補洞：永豐金有資料就用永豐金，缺的分類才用 HiStock。"""
+    out = empty_warrant_bs_top10()
+    for key in out.keys():
+        p = primary.get(key) if primary else pd.DataFrame()
+        f = fallback.get(key) if fallback else pd.DataFrame()
+        out[key] = p if p is not None and not p.empty else f
+    return out
+
+
 def fetch_warrant_bs_top10():
     """
+    權證盤後買賣超 TOP10 優化版。
+    資料源優先序：
+    1) 永豐金權證網：較貼近權證市場統計，優先使用
+    2) HiStock：可抓認購 / 認售標的買賣超，當備援
+
+    元大 / 富邦目前比較適合抓權證搜尋、成交量 / 成交值排行；
+    投資人買賣超金額排行這塊，永豐金頁面有明確分類，所以先放第一順位。
+    """
+    primary = fetch_sinotrade_warrant_bs_top10()
+    need_fallback = any(primary.get(k) is None or primary.get(k).empty for k in primary.keys())
+    if not need_fallback:
+        return primary
+
+    fallback = mark_warrant_bs_source(fetch_histock_warrant_bs_top10(), "HiStock備援")
+    return merge_warrant_bs_sources(primary, fallback)
+
+
+def fetch_histock_warrant_bs_top10():
+    """
     權證盤後買賣超 TOP10。
-    優化版：改抓 HiStock 投資人權證買賣超排名，並做多層 fallback。
+    HiStock 備援版：抓投資人權證買賣超排名，並做多層 fallback。
 
     抓取邏輯：
     1. 先抓主頁
@@ -1201,7 +1458,9 @@ def warrant_bs_rank_lines(df):
     for i, (_, r) in enumerate(df.head(10).iterrows(), start=1):
         name = str(r.get("名稱", "")).strip()
         amt = str(r.get("金額", "")).strip()
-        lines.append(f"{i}. {name}｜{amt}")
+        src = str(r.get("來源", "")).strip()
+        tail = f"｜{src}" if src else ""
+        lines.append(f"{i}. {name}｜{amt}{tail}")
     return lines
 
 
@@ -1249,7 +1508,7 @@ def build_report(df):
 
     if df.empty:
         report = "\n".join([
-            "📊 市場資金流雷達 v1.3",
+            "📊 市場資金流雷達 v1.4",
             status_text,
             f"📅 資料日：{actual_day}",
             f"🕒 最後更新：{now.strftime('%Y/%m/%d %H:%M')}",
@@ -1273,7 +1532,7 @@ def build_report(df):
     focus = pd.DataFrame()
 
     report_lines = []
-    report_lines.append("📊 市場資金流雷達 v1.3")
+    report_lines.append("📊 市場資金流雷達 v1.4")
     report_lines.append(status_text)
     if status_text.startswith("⚠️"):
         report_lines.append(f"預期資料日：{expected_day}")
