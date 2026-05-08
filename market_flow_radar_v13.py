@@ -6,7 +6,7 @@
 # - 寫入 Google Sheet
 # - 推播 Telegram
 # - 最後追加：權證認購買超 / 認購賣超 / 認售買超 / 認售賣超 TOP10
-# - 權證買賣超 TOP10 改抓 HiStock 投資人權證買賣超排名
+# - 權證買賣超 TOP10 改抓 HiStock 投資人權證買賣超排名，並加入多層 fallback
 
 import io
 import os
@@ -795,7 +795,7 @@ def append_foreign_section(lines, foreign_df):
 
 
 # ============================================================
-# 權證買賣超 TOP10：HiStock 抓取版
+# 權證買賣超 TOP10：HiStock 多層 fallback 版
 # ============================================================
 
 def empty_warrant_bs_top10():
@@ -810,22 +810,60 @@ def empty_warrant_bs_top10():
 def fetch_warrant_bs_top10():
     """
     權證盤後買賣超 TOP10。
-    改抓 HiStock 投資人權證買賣超排名：
-    - 認購買超
-    - 認購賣超
-    - 認售買超
-    - 認售賣超
+    優化版：改抓 HiStock 投資人權證買賣超排名，並做多層 fallback。
 
-    輸出：名稱、金額，金額以億顯示，小數後 1 位。
+    抓取邏輯：
+    1. 先抓主頁
+    2. 自動尋找頁面上「認購/認售 + 買超/賣超」的分類連結
+    3. 有分類連結就分別打開分類頁
+    4. 找不到分類連結時，回到主頁所有表格中用欄位與金額型態判斷
+    5. 最後輸出：名稱｜金額，金額以億顯示，小數後 1 位
     """
     out = empty_warrant_bs_top10()
 
-    url = "https://histock.tw/stock/warrantstats.aspx"
+    base_url = "https://histock.tw"
+    main_url = "https://histock.tw/stock/warrantstats.aspx"
+
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
         "Referer": "https://histock.tw/",
+        "Connection": "keep-alive",
     }
+
+    targets = {
+        "認購買超": ("認購", "買超"),
+        "認購賣超": ("認購", "賣超"),
+        "認售買超": ("認售", "買超"),
+        "認售賣超": ("認售", "賣超"),
+    }
+
+    def abs_url(href):
+        href = str(href or "").strip()
+        if not href:
+            return ""
+        if href.startswith("http"):
+            return href
+        if href.startswith("/"):
+            return base_url + href
+        return base_url + "/" + href.lstrip("./")
+
+    def fetch_html(url):
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            r.raise_for_status()
+            # HiStock 多為繁中頁，requests 通常可自動判斷；這裡補強
+            if not r.encoding or r.encoding.lower() == "iso-8859-1":
+                r.encoding = r.apparent_encoding
+            return r.text
+        except Exception as e:
+            print(f"HiStock 抓取失敗：{url}｜{e}")
+            return ""
 
     def flatten_columns(df):
         x = df.copy()
@@ -838,11 +876,7 @@ def fetch_warrant_bs_top10():
         x.columns = cols
         return x
 
-    def fmt_amount_yi(v):
-        """
-        HiStock 欄位通常是「買賣超金額」，原始以元呈現。
-        統一轉成：億，小數後 1 位。
-        """
+    def parse_amount_num(v):
         try:
             s = (
                 str(v)
@@ -854,11 +888,16 @@ def fetch_warrant_bs_top10():
                 .strip()
             )
             if s in ["", "-", "--", "nan", "None"]:
-                return ""
+                return None
+            return float(s)
+        except Exception:
+            return None
 
-            num = float(s)
+    def fmt_amount_yi(v):
+        try:
+            num = float(v)
 
-            # 若來源已經是小數億，就直接用；否則用元轉億
+            # 若來源已經是億單位，例如 1.23，直接顯示
             if abs(num) < 1000:
                 yi = num
             else:
@@ -873,110 +912,240 @@ def fetch_warrant_bs_top10():
         s = re.sub(r"\s+", "", s)
         return s
 
-    def score_table(text, cp_word, side_word):
-        score = 0
-        if cp_word in text:
-            score += 5
-        if side_word in text:
-            score += 5
-        if "買賣超金額" in text or "金額" in text:
-            score += 2
-        if "股票" in text or "名稱" in text:
-            score += 1
-        return score
+    def is_bad_name(s):
+        s = str(s)
+        bad_words = [
+            "股票", "名稱", "標的", "排名", "代號", "買超", "賣超",
+            "買賣超", "金額", "張數", "流通", "nan", "None", "--"
+        ]
+        return (not s) or any(k in s for k in bad_words)
 
-    def pick_by_keywords(tables, cp_word, side_word):
+    def table_contexts_from_html(html):
         """
-        從所有表格中找出最符合：
-        cp_word = 認購 / 認售
-        side_word = 買超 / 賣超
-        的表格。
+        回傳 [(context_text, table_html), ...]
+        context_text 會抓 table 前後附近文字，避免分類文字在 table 外造成誤判。
         """
-        candidates = []
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            tables = soup.find_all("table")
+            items = []
 
-        for tb in tables:
-            if tb is None or tb.empty:
-                continue
+            for tb in tables:
+                context_parts = []
 
-            x = flatten_columns(tb)
-            text = " ".join([str(v) for v in x.astype(str).values.flatten()])
-            col_text = " ".join([str(c) for c in x.columns])
-            all_text = col_text + " " + text
+                # table 自己文字
+                context_parts.append(tb.get_text(" ", strip=True))
 
-            if cp_word not in all_text or side_word not in all_text:
-                continue
+                # 往上抓 parent / grandparent 的文字
+                p = tb.parent
+                depth = 0
+                while p is not None and depth < 3:
+                    context_parts.append(p.get_text(" ", strip=True)[:2000])
+                    p = p.parent
+                    depth += 1
 
-            name_col = None
-            amt_col = None
+                # 往前抓幾個兄弟節點，常見標題在 table 前面
+                prev = tb.find_previous()
+                steps = 0
+                while prev is not None and steps < 8:
+                    try:
+                        context_parts.append(prev.get_text(" ", strip=True)[:500])
+                    except Exception:
+                        pass
+                    prev = prev.find_previous()
+                    steps += 1
+
+                context = " ".join(context_parts)
+                items.append((context, str(tb)))
+
+            return items
+
+        except Exception:
+            return []
+
+    def discover_category_urls(html):
+        """
+        從主頁找分類連結。
+        若找不到，後續仍會用主頁 fallback。
+        """
+        found = {k: [] for k in targets.keys()}
+
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+            for a in soup.find_all("a"):
+                txt = a.get_text(" ", strip=True)
+                href = a.get("href", "")
+                combo = txt + " " + href
+
+                for key, (cp_word, side_word) in targets.items():
+                    if cp_word in combo and side_word in combo:
+                        u = abs_url(href)
+                        if u and u not in found[key]:
+                            found[key].append(u)
+
+            # 也掃 onclick / data-url
+            for tag in soup.find_all(True):
+                attrs_text = " ".join([str(v) for v in tag.attrs.values()])
+                tag_text = tag.get_text(" ", strip=True)
+                combo = tag_text + " " + attrs_text
+
+                for key, (cp_word, side_word) in targets.items():
+                    if cp_word in combo and side_word in combo:
+                        m = re.search(r"['\"]([^'\"]*warrantstats[^'\"]*)['\"]", attrs_text)
+                        if m:
+                            u = abs_url(m.group(1))
+                            if u and u not in found[key]:
+                                found[key].append(u)
+
+        except Exception as e:
+            print(f"HiStock 分類連結解析失敗：{e}")
+
+        return found
+
+    def dataframe_from_table_html(table_html):
+        try:
+            arr = pd.read_html(io.StringIO(table_html))
+            if not arr:
+                return None
+            return flatten_columns(arr[0])
+        except Exception:
+            return None
+
+    def select_columns(x):
+        """
+        找名稱欄與金額欄。
+        名稱欄：優先 股票/名稱/標的，否則找中文比例高的欄。
+        金額欄：優先 買賣超金額/金額，否則找數字且金額級距大的欄。
+        """
+        if x is None or x.empty:
+            return None, None
+
+        name_col = None
+        amt_col = None
+
+        for c in x.columns:
+            cs = str(c)
+            if name_col is None and ("股票" in cs or "名稱" in cs or "標的" in cs):
+                name_col = c
+            if amt_col is None and ("買賣超金額" in cs or "金額" in cs):
+                amt_col = c
+
+        if name_col is None:
+            best_col = None
+            best_score = -1
+            for c in x.columns:
+                vals = x[c].astype(str).head(30).tolist()
+                joined = " ".join(vals)
+
+                if any(k in str(c) for k in ["代號", "排名", "金額", "張數", "流通", "漲跌", "比例"]):
+                    continue
+                if any(k in joined for k in ["買超", "賣超", "金額", "張數", "排名"]):
+                    continue
+
+                score = sum(1 for v in vals if re.search(r"[\u4e00-\u9fff]", v))
+                if score > best_score:
+                    best_score = score
+                    best_col = c
+
+            if best_score >= 3:
+                name_col = best_col
+
+        if amt_col is None:
+            best_col = None
+            best_score = -1
 
             for c in x.columns:
                 cs = str(c)
-                if name_col is None and ("股票" in cs or "名稱" in cs or "標的" in cs):
-                    name_col = c
-                if amt_col is None and ("買賣超金額" in cs or "金額" in cs):
-                    amt_col = c
+                if any(k in cs for k in ["代號", "排名", "張數", "流通", "比例", "%"]):
+                    continue
 
-            # pandas 有時候會把欄位讀成 Unnamed，改用位置判斷
-            if name_col is None:
-                for c in x.columns:
-                    vals = x[c].astype(str).head(15).tolist()
-                    joined = " ".join(vals)
-                    if not any(k in joined for k in ["買超", "賣超", "金額", "張數", "排名"]):
-                        # 名稱欄通常是中文股票名
-                        if any(re.search(r"[\u4e00-\u9fff]", v) for v in vals):
-                            name_col = c
-                            break
+                nums = x[c].apply(parse_amount_num)
+                valid = nums.dropna()
+                if len(valid) < 3:
+                    continue
 
-            if amt_col is None:
-                for c in reversed(x.columns):
-                    nums = pd.to_numeric(
-                        x[c].astype(str)
-                        .str.replace(",", "", regex=False)
-                        .str.replace("+", "", regex=False)
-                        .str.replace("−", "-", regex=False),
-                        errors="coerce"
-                    )
-                    if nums.notna().sum() >= 3:
-                        amt_col = c
-                        break
+                # 金額欄通常數值較大
+                magnitude = valid.abs().median()
+                score = len(valid) + min(magnitude / 1_000_000, 50)
+                if score > best_score:
+                    best_score = score
+                    best_col = c
 
-            if name_col is None or amt_col is None:
-                continue
+            amt_col = best_col
 
-            y = x[[name_col, amt_col]].copy()
-            y.columns = ["名稱", "原始金額"]
+        return name_col, amt_col
 
-            y["名稱"] = y["名稱"].apply(clean_name)
-            y["金額_num"] = pd.to_numeric(
-                y["原始金額"].astype(str)
-                .str.replace(",", "", regex=False)
-                .str.replace("+", "", regex=False)
-                .str.replace("−", "-", regex=False),
-                errors="coerce"
-            )
+    def parse_one_table(x, side_word):
+        if x is None or x.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
 
-            y = y.dropna(subset=["金額_num"])
-            y = y[
-                (y["名稱"] != "") &
-                (~y["名稱"].str.contains("股票|名稱|標的|排名|nan|None|買超|賣超", na=False))
-            ]
+        x = x.dropna(how="all").copy()
+        if x.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
 
-            if y.empty:
-                continue
+        name_col, amt_col = select_columns(x)
+        if name_col is None or amt_col is None:
+            return pd.DataFrame(columns=["名稱", "金額"])
 
-            # 賣超通常為負值，從最負排序；若來源賣超用正值，則由大到小
-            if side_word == "賣超":
-                if (y["金額_num"] < 0).any():
-                    y = y.sort_values("金額_num", ascending=True)
-                else:
-                    y = y.sort_values("金額_num", ascending=False)
+        y = x[[name_col, amt_col]].copy()
+        y.columns = ["名稱", "原始金額"]
+        y["名稱"] = y["名稱"].apply(clean_name)
+        y["金額_num"] = y["原始金額"].apply(parse_amount_num)
+
+        y = y.dropna(subset=["金額_num"])
+        y = y[~y["名稱"].apply(is_bad_name)]
+
+        # 避免代號欄誤判成名稱
+        y = y[~y["名稱"].astype(str).str.fullmatch(r"\d{4,6}", na=False)]
+
+        if y.empty:
+            return pd.DataFrame(columns=["名稱", "金額"])
+
+        if side_word == "賣超":
+            if (y["金額_num"] < 0).any():
+                y = y.sort_values("金額_num", ascending=True)
             else:
                 y = y.sort_values("金額_num", ascending=False)
+        else:
+            y = y.sort_values("金額_num", ascending=False)
 
-            y = y.head(10).copy()
-            y["金額"] = y["金額_num"].apply(fmt_amount_yi)
+        y = y.head(10).copy()
+        y["金額"] = y["金額_num"].apply(fmt_amount_yi)
+        return y[["名稱", "金額"]]
 
-            candidates.append((score_table(all_text, cp_word, side_word), y[["名稱", "金額"]]))
+    def score_candidate(context, x, cp_word, side_word):
+        text = context + " " + " ".join([str(c) for c in getattr(x, "columns", [])])
+        score = 0
+        if cp_word in text:
+            score += 10
+        if side_word in text:
+            score += 10
+        if "買賣超金額" in text:
+            score += 5
+        if "金額" in text:
+            score += 2
+        if "股票" in text or "名稱" in text or "標的" in text:
+            score += 2
+        return score
+
+    def extract_from_html(html, cp_word, side_word, require_context=False):
+        items = table_contexts_from_html(html)
+        candidates = []
+
+        for context, table_html in items:
+            if require_context and (cp_word not in context or side_word not in context):
+                continue
+
+            x = dataframe_from_table_html(table_html)
+            y = parse_one_table(x, side_word)
+
+            if y is None or y.empty:
+                continue
+
+            sc = score_candidate(context, x, cp_word, side_word)
+            candidates.append((sc, y))
 
         if not candidates:
             return pd.DataFrame(columns=["名稱", "金額"])
@@ -985,16 +1154,40 @@ def fetch_warrant_bs_top10():
         return candidates[0][1]
 
     try:
-        r = requests.get(url, headers=headers, timeout=30)
-        r.raise_for_status()
-        html = r.text
+        main_html = fetch_html(main_url)
+        if not main_html:
+            return out
 
-        tables = pd.read_html(io.StringIO(html))
+        cat_urls = discover_category_urls(main_html)
 
-        out["認購買超"] = pick_by_keywords(tables, "認購", "買超")
-        out["認購賣超"] = pick_by_keywords(tables, "認購", "賣超")
-        out["認售買超"] = pick_by_keywords(tables, "認售", "買超")
-        out["認售賣超"] = pick_by_keywords(tables, "認售", "賣超")
+        for key, (cp_word, side_word) in targets.items():
+            html_candidates = []
+
+            # 1) 先試分類連結
+            for u in cat_urls.get(key, []):
+                h = fetch_html(u)
+                if h:
+                    html_candidates.append((u, h, True))
+
+            # 2) 再試主頁，但要求 context 符合分類
+            html_candidates.append((main_url, main_html, True))
+
+            # 3) 最後 fallback：主頁不要求 context，只抓最像買賣超表的表格
+            html_candidates.append((main_url, main_html, False))
+
+            result = pd.DataFrame(columns=["名稱", "金額"])
+
+            for u, h, require_context in html_candidates:
+                result = extract_from_html(h, cp_word, side_word, require_context=require_context)
+                if result is not None and not result.empty:
+                    break
+
+            out[key] = result if result is not None else pd.DataFrame(columns=["名稱", "金額"])
+
+            if out[key].empty:
+                print(f"HiStock {key}：資料不足，可能是分類參數或表格結構變更。")
+            else:
+                print(f"HiStock {key}：成功抓到 {len(out[key])} 筆。")
 
     except Exception as e:
         print(f"HiStock 權證買賣超 TOP10 抓取失敗：{e}")
