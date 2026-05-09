@@ -1,13 +1,6 @@
 name: US Market Afterhours Radar Daily
 
 on:
-  schedule:
-    # 台灣時間 週二～週六 07:07
-    # GitHub Actions cron 使用 UTC
-    # Taiwan UTC+8，所以 07:07 台灣時間 = 前一天 23:07 UTC
-    # 台灣週二～週六早上 = UTC 週一～週五晚上
-    - cron: "7 23 * * 1-5"
-
   workflow_dispatch:
 
 jobs:
