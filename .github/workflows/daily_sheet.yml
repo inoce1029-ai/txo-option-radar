@@ -1,14 +1,9 @@
 name: TXO Option Radar Google Sheet Daily
 
 on:
-  schedule:
-    # 台灣時間 週一～週五 18:07
-    # GitHub Actions cron 使用 UTC
-    # Taiwan UTC+8，所以 18:07 台灣時間 = 10:07 UTC
-    # 避開整點 18:00，降低 GitHub Actions 排程延遲或漏跑機率
-    - cron: "7 10 * * 1-5"
-
   workflow_dispatch:
+  repository_dispatch:
+    types: [run-txo-radar]
 
 jobs:
   run-radar-sheet:
