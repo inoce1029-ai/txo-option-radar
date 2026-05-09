@@ -1,13 +1,6 @@
 name: Market Flow Radar Daily
 
 on:
-  schedule:
-    # 台灣時間 週一～週五 08:07
-    # GitHub Actions cron 使用 UTC
-    # Taiwan UTC+8，所以 08:07 台灣時間 = 00:07 UTC
-    # 法人 / 籌碼資料更新後推播
-    - cron: "7 0 * * 1-5"
-
   workflow_dispatch:
 
 jobs:
