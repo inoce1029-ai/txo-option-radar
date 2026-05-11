@@ -2,6 +2,11 @@ name: Market Flow Radar Daily
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/warrant_daily.yml
 
 jobs:
   run-market-flow-radar:
