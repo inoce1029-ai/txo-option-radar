@@ -28,8 +28,10 @@ jobs:
           WARRANT_GOOGLE_SHEET_ID: ${{ secrets.WARRANT_GOOGLE_SHEET_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: bash
         run: |
-          python market_flow_radar_v18_no_warrant.py | tee market_flow_report.txt
+          set -o pipefail
+          python market_flow_radar_v13.py | tee market_flow_report.txt
 
       - name: Upload backup report artifact
         if: always()
